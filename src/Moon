@@ -1,0 +1,289 @@
+//   ════════════════════════════════════════════════════════════
+//      BLUEPRINT RESEARCH • OPEN SOURCE PLANETARY EPHEMERIS
+//   ════════════════════════════════════════════════════════════
+//
+//                  ★       ★       ★
+//                      ╱   │   ╲
+//                     ─    ☉    ─
+//                      ╲   │   ╱
+//                  ★       ★       ★
+//
+//   ════════════════════════════════════════════════════════════
+//
+// @library      ELP2000-82 Moon Library
+// @description  Geocentric lunar position calculations based on ELP2000-82 theory
+//               (truncated Meeus version). Provides longitude, latitude, declination,
+//               and lunar node positions.
+//
+// @author       BlueprintResearch (Javonnii)
+// @license      MIT License - Free to use with attribution
+// @repository   https://github.com/javonniicurry/Planetary_Ephemeris
+//
+// @theory       ELP2000-82 (Lunar theory by Chapront-Touzé & Chapront)
+// @accuracy     Truncated to 48 main terms - 10" precision
+// @time_scale   Julian centuries from J2000.0 (use core.get_julian_centuries)
+//
+// @reference    Meeus, Jean. "Astronomical Algorithms" (2nd Ed., 1998), Chapter 47
+//               Chapront-Touzé & Chapront. "ELP2000-82" (1983)
+//
+// @showcase     Includes commented showcase code with 250-bar future projection.
+//               Uncomment to display Moon data with polyline projections.
+//
+// @open_source  This library is part of an open-source alternative to
+//               proprietary astronomical libraries. Study, modify, and
+//               share freely. We believe knowledge of the cosmos belongs
+//               to everyone.
+//
+// ════════════════════════════════════════════════════════════════
+//   © 2025 BlueprintResearch / Javonnii
+//   Licensed under MIT License
+// ════════════════════════════════════════════════════════════════
+//
+//@version=6
+import BlueprintResearch/lib_vsop_core/1 as core
+library("lib_elp2000_moon")
+
+var float PI = math.pi
+var float DEG_TO_RAD = PI / 180.0
+var float RAD_TO_DEG = 180.0 / PI
+
+// Computes the fundamental lunar arguments (in degrees).
+// Returns [Lp, D, M, Mp, F], where:
+// - Lp: Mean longitude of the Moon
+// - D: Mean elongation of the Moon from the Sun
+// - M: Mean anomaly of the Sun
+// - Mp: Mean anomaly of the Moon
+// - F: Moon's argument of latitude
+get_fundamentals(float T) =>
+    float Lp = 218.3164477 + 481267.88123421 * T - 0.0015786 * T*T + T*T*T / 545868.0 - T*T*T*T / 113065000.0
+    float D  = 297.8501921 + 445267.1114034 * T - 0.0018819 * T*T + T*T*T / 545868.0 - T*T*T*T / 113065000.0
+    float M  = 357.5291092 + 35999.0502909 * T - 0.0001536 * T*T + T*T*T / 24490000.0
+    float Mp = 134.9633964 + 477198.8675055 * T + 0.0087414 * T*T + T*T*T / 69699.0 - T*T*T*T / 14712000.0
+    float F  = 93.2720950 + 483202.0175238 * T - 0.0036539 * T*T - T*T*T / 3526000.0 + T*T*T*T / 863310000.0
+    [Lp, D, M, Mp, F]
+
+// Computes the Earth's orbital eccentricity factor for scaling perturbation terms.
+get_E(float T) =>
+    1.0 - 0.002516 * T - 0.0000074 * T*T
+
+// Evaluates the longitude perturbation sigma_l (in degrees).
+eval_sigma_l(float D, float M, float Mp, float F, float E) =>
+    // Parallel arrays for perturbation coefficients (from Meeus Table 47.A, truncated to 48 main terms for efficiency).
+    // If higher precision is needed, add the remaining ~12 smaller terms from the full table.
+    array<int> iDs_g1 = array.from(0, 2, 2, 0, 0, 0, 2, 2, 2, 2, 0, 0)
+    array<int> iDs_g2 = array.from(4, 0, 2, 0, 4, 0, 4, 2, 2, 2, 1, 2)
+    array<int> iDs_g3 = array.from(2, 4, 0, 2, 0, 2, 4, 1, 2, 0, 2, 2)
+    array<int> iDs_g4 = array.from(2, 4, 1, 3, 2, 4, 0, 2, 2, 2, 4)
+    array<int> iDs = array.concat(array.concat(array.concat(iDs_g1, iDs_g2), iDs_g3), iDs_g4)
+
+    array<int> iMs_g1 = array.from(0, 0, 0, 0, 1, 0, 0, -1, 0, -1, 1, 1)
+    array<int> iMs_g2 = array.from(0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0)
+    array<int> iMs_g3 = array.from(-1, -1, 0, 2, 0, 0, -1, 0, -1, 2, -1, 0)
+    array<int> iMs_g4 = array.from(0, -1, 0, 0, 1, -1, 0, 1, 2, 0, 0)
+    array<int> iMs = array.concat(array.concat(array.concat(iMs_g1, iMs_g2), iMs_g3), iMs_g4)
+
+    array<int> iMps_g1 = array.from(1, -1, 0, 2, 0, 0, -2, -1, 1, 0, -1, 1)
+    array<int> iMps_g2 = array.from(-1, 1, -1, 3, -2, 0, 0, 0, 1, 0, 1, 2)
+    array<int> iMps_g3 = array.from(1, -1, 2, 0, -3, 0, -1, -2, -1, -1, 2, 1)
+    array<int> iMps_g4 = array.from(-2, 0, 0, -1, -3, 1, 4, 2, -1, 3, 1)
+    array<int> iMps = array.concat(array.concat(array.concat(iMps_g1, iMps_g2), iMps_g3), iMps_g4)
+
+    array<int> iFs_g1 = array.from(0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0)
+    array<int> iFs_g2 = array.from(0, 2, 0, 0, 0, -2, 0, 0, 0, -2, 0, 0)
+    array<int> iFs_g3 = array.from(0, 0, 2, 0, 0, 0, -2, 0, 0, -1, -2, -1)
+    array<int> iFs_g4 = array.from(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    array<int> iFs = array.concat(array.concat(array.concat(iFs_g1, iFs_g2), iFs_g3), iFs_g4)
+
+    array<int> As_g1 = array.from(6288774, 1274027, 658314, 213618, -185116, -114332, 58793, 57066, 53322, 45758, -40923, -34720)
+    array<int> As_g2 = array.from(-30383, 15327, -12528, 10980, 10675, 10034, 8548, -7888, -6766, -5163, 4988, 4036)
+    array<int> As_g3 = array.from(3994, 3861, 3665, -2689, -2602, 2390, -2348, 2236, -2120, -2069, 2048, -1773)
+    array<int> As_g4 = array.from(-1595, 1215, -1110, -892, -810, 759, -713, -700, 691, 596, 549)
+    array<int> As = array.concat(array.concat(array.concat(As_g1, As_g2), As_g3), As_g4)
+
+    float sum = 0.0
+    int size = array.size(iDs)
+    for i = 0 to size - 1
+        float amp = array.get(As, i)
+        int abs_iM = math.abs(array.get(iMs, i))
+        if abs_iM == 1
+            amp *= E
+        else if abs_iM == 2
+            amp *= E * E
+        float arg = (float(array.get(iDs, i)) * D + float(array.get(iMs, i)) * M + float(array.get(iMps, i)) * Mp + float(array.get(iFs, i)) * F) * DEG_TO_RAD
+        sum += amp * math.sin(arg)
+    sum / 1000000.0
+
+// Evaluates the latitude perturbation sigma_b (in degrees).
+eval_sigma_b(float D, float M, float Mp, float F, float E) =>
+    // Parallel arrays for perturbation coefficients (from Meeus Table 47.B, truncated to 43 main terms for efficiency).
+    // If higher precision is needed, add the remaining ~17 smaller terms from the full table.
+    array<int> iDs_g1 = array.from(0, 0, 0, 2, 2, 2, 2, 0, 2, 0)
+    array<int> iDs_g2 = array.from(2, 2, 2, 2, 2, 2, 2, 2, 2, 0)
+    array<int> iDs_g3 = array.from(0, 0, 0, 0, 0, 0, 0, 2, 0, 2)
+    array<int> iDs_g4 = array.from(2, 2, 2, 0, 2, 2, 0, 0, 0, 4, 0, 0, 0)
+    array<int> iDs = array.concat(array.concat(array.concat(iDs_g1, iDs_g2), iDs_g3), iDs_g4)
+
+    array<int> iMs_g1 = array.from(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    array<int> iMs_g2 = array.from(-1, 0, -1, 0, -1, -1, 0, -1, 0, 0)
+    array<int> iMs_g3 = array.from(0, 0, 1, 0, 1, 0, -1, 0, 0, 0, 1, 1, -1)
+    array<int> iMs_g4 = array.from(1, -1, 0, 1, -1, 1, 0, 1, -1, -1, 0)
+    array<int> iMs = array.concat(array.concat(array.concat(iMs_g1, iMs_g2), iMs_g3), iMs_g4)
+
+    array<int> iMps_g1 = array.from(0, 1, 1, 0, -1, -1, 0, 2, 1, 2)
+    array<int> iMps_g2 = array.from(0, -2, -1, 1, -1, 1, -2, 1, 2, 0)
+    array<int> iMps_g3 = array.from(3, 3, 0, -1, 0, -1, 1, 0, -2, -3, 2, -1, -2)
+    array<int> iMps_g4 = array.from(1, -1, -1, -1, 1, 0, -1, 1, -1, -1, -1)
+    array<int> iMps = array.concat(array.concat(array.concat(iMps_g1, iMps_g2), iMps_g3), iMps_g4)
+
+    array<int> iFs_g1 = array.from(1, 1, -1, -1, 1, -1, 1, 1, -1, -1)
+    array<int> iFs_g2 = array.from(-1, -1, 1, 1, -1, -1, 1, 1, -1, 3)
+    array<int> iFs_g3 = array.from(1, -1, 1, 1, -1, -1, 1, -3, 1, -1, 1, -1, -1)
+    array<int> iFs_g4 = array.from(1, -3, 1, -1, -1, 1, -1, 1, -1, -1)
+    array<int> iFs = array.concat(array.concat(array.concat(iFs_g1, iFs_g2), iFs_g3), iFs_g4)
+
+    array<int> As_g1 = array.from(5128122, 280602, 277693, 173237, 55413, 46271, 32573, 17198, 9266, 8822)
+    array<int> As_g2 = array.from(-8216, 4324, 4200, 3359, 2463, 2211, -2065, -1921, 1335, 1102)
+    array<int> As_g3 = array.from(1021, 833, 777, 671, 607, 596, 491, 451, 439, 422, 421, 366, 351)
+    array<int> As_g4 = array.from(331, 315, 302, 285, 264, 229, 223, 223, 223, 220)
+    array<int> As = array.concat(array.concat(array.concat(As_g1, As_g2), As_g3), As_g4)
+
+    float sum = 0.0
+    int size = array.size(iDs)
+    for i = 0 to size - 1
+        float amp = array.get(As, i)
+        int abs_iM = math.abs(array.get(iMs, i))
+        if abs_iM == 1
+            amp *= E
+        else if abs_iM == 2
+            amp *= E * E
+        float arg = (float(array.get(iDs, i)) * D + float(array.get(iMs, i)) * M + float(array.get(iMps, i)) * Mp + float(array.get(iFs, i)) * F) * DEG_TO_RAD
+        sum += amp * math.sin(arg)
+    sum / 1000000.0
+
+// Computes the geocentric ecliptic longitude of the Moon (in degrees, 0 to 360).
+export get_geo_ecl_lon(float T) =>
+    [Lp, D, M, Mp, F] = get_fundamentals(T)
+    E = get_E(T)
+    sigma_l = eval_sigma_l(D, M, Mp, F, E)
+    core.mod360(Lp + sigma_l)
+
+// Computes the geocentric ecliptic latitude of the Moon (in degrees).
+export get_geo_ecl_lat(float T) =>
+    [Lp, D, M, Mp, F] = get_fundamentals(T)
+    E = get_E(T)
+    sigma_b = eval_sigma_b(D, M, Mp, F, E)
+    sigma_b
+
+// Computes the mean obliquity of the ecliptic (in degrees).
+export get_obliquity(float T) =>
+    float base = 23.0 + 26.0 / 60.0 + 21.448 / 3600.0
+    float delta = 46.815 * T + 0.00059 * T*T - 0.001813 * T*T*T
+    base - delta / 3600.0
+
+// Computes the geocentric equatorial declination of the Moon (in degrees).
+export get_declination(float T) =>
+    float lambda = get_geo_ecl_lon(T)
+    float beta = get_geo_ecl_lat(T)
+    float eps = get_obliquity(T)
+    float lambda_rad = lambda * DEG_TO_RAD
+    float beta_rad = beta * DEG_TO_RAD
+    float eps_rad = eps * DEG_TO_RAD
+    float sin_delta = math.sin(beta_rad) * math.cos(eps_rad) + math.cos(beta_rad) * math.sin(eps_rad) * math.sin(lambda_rad)
+    math.asin(sin_delta) * RAD_TO_DEG
+
+// Computes the mean longitude of the Moon's ascending node (in degrees).
+get_mean_node_lon(float T) =>
+    125.04452 - 1934.136261 * T + 0.0020708 * T*T + T*T*T / 450000.0
+
+// Computes the true longitude of the Moon's ascending node (in degrees, 0 to 360).
+export get_true_node_lon(float T) =>
+    node = get_mean_node_lon(T)
+    D = 297.85036 + 445267.111480 * T - 0.0019142 * T*T + T*T*T / 189474.0
+    M = 357.52772 + 35999.050340 * T - 0.0001603 * T*T - T*T*T / 300000.0
+    Mp = 134.96298 + 477198.867398 * T + 0.0086972 * T*T + T*T*T / 56250.0
+    F = 93.27191 + 483202.017538 * T - 0.0036825 * T*T + T*T*T / 327270.0
+
+    node += -1.4979 * math.sin(DEG_TO_RAD * (2 * D))
+         - 0.1500 * math.sin(DEG_TO_RAD * M)
+         - 0.1226 * math.sin(DEG_TO_RAD * (2 * F))
+         + 0.1176 * math.sin(DEG_TO_RAD * (2 * D - Mp))
+         - 0.0801 * math.sin(DEG_TO_RAD * (2 * D + Mp))
+    core.mod360(node)
+
+// Computes the true longitude of the Moon's descending (south) node (in degrees, 0 to 360).
+export get_true_south_node_lon(float T) =>
+    core.mod360(get_true_node_lon(T) + 180.0)
+
+// Computes the declination of the Moon's ascending node (in degrees).
+export get_node_declination(float T) =>
+    float a_ = get_true_node_lon(T)
+    float e_ = get_obliquity(T)
+    math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
+
+// Computes the declination of the Moon's descending (south) node (in degrees).
+export get_south_node_declination(float T) =>
+    float a_ = core.mod360(get_true_node_lon(T) + 180.0)
+    float e_ = get_obliquity(T)
+    math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHOWCASE PLOT - Uncomment for TradingView publication
+// Demonstrates Moon geocentric data with 100-bar future projection
+// Note: Moon uses Julian centuries and has no speed function
+// ═══════════════════════════════════════════════════════════════════════════
+
+// var int LOOK_AHEAD = 250
+//
+// // Polyline references (persist across bars)
+// var polyline lon_line = na
+// var polyline decl_line = na
+// var polyline node_line = na
+//
+// T = core.get_julian_centuries(time)
+//
+// // Historical data
+// lon = get_geo_ecl_lon(T)
+// decl = get_declination(T)
+// node_lon = get_true_node_lon(T)
+//
+// plot(lon, "Moon Geocentric Longitude", color=color.silver)
+// plot(decl, "Moon Declination", color=color.red)
+// plot(node_lon, "Lunar Node Longitude", color=color.lime)
+//
+// // Future projection using polylines
+// if barstate.islast
+//     // Delete old polylines
+//     polyline.delete(lon_line)
+//     polyline.delete(decl_line)
+//     polyline.delete(node_line)
+//
+//     // Build point arrays (start with current bar for smooth connection)
+//     array<chart.point> lon_pts = array.new<chart.point>()
+//     array<chart.point> decl_pts = array.new<chart.point>()
+//     array<chart.point> node_pts = array.new<chart.point>()
+//
+//     // First point = current bar (connects polyline to historical plot)
+//     array.push(lon_pts, chart.point.from_time(time, lon))
+//     array.push(decl_pts, chart.point.from_time(time, decl))
+//     array.push(node_pts, chart.point.from_time(time, node_lon))
+//
+//     // Add future points
+//     for i = 1 to LOOK_AHEAD
+//         future_time = core.get_future_time(time, i)
+//         future_T = core.get_julian_centuries(future_time)
+//
+//         f_lon = get_geo_ecl_lon(future_T)
+//         f_decl = get_declination(future_T)
+//         f_node = get_true_node_lon(future_T)
+//
+//         array.push(lon_pts, chart.point.from_time(future_time, f_lon))
+//         array.push(decl_pts, chart.point.from_time(future_time, f_decl))
+//         array.push(node_pts, chart.point.from_time(future_time, f_node))
+//
+//     // Create polylines
+//     lon_line := polyline.new(lon_pts, xloc=xloc.bar_time,
+//                 line_color=color.new(color.silver, 50), line_style=line.style_dotted, force_overlay=false)
+//     decl_line := polyline.new(decl_pts, xloc=xloc.bar_time,
+//                  line_color=color.new(color.red, 50), line_style=line.style_dotted, force_overlay=false)
+//     node_line := polyline.new(node_pts, xloc=xloc.bar_time,
+//                  line_color=color.new(color.lime, 50), line_style=line.style_dotted, force_overlay=false)

@@ -1,0 +1,342 @@
+//   ════════════════════════════════════════════════════════════
+//      BLUEPRINT RESEARCH • OPEN SOURCE PLANETARY EPHEMERIS
+//   ════════════════════════════════════════════════════════════
+//
+//                  ★       ★       ★
+//                      ╱   │   ╲
+//                     ─    ☉    ─
+//                      ╲   │   ╱
+//                  ★       ★       ★
+//
+//   ════════════════════════════════════════════════════════════
+//
+// @library      Planetary Ephemeris Master Library
+// @description  Unified API for all planetary positions. Imports all planetary libraries
+//               and provides simplified access functions, planetary averages, and
+//               retrograde detection. Your primary interface for ephemeris data.
+//
+// @author       BlueprintResearch (Javonnii)
+// @license      MIT License - Free to use with attribution
+// @repository   https://github.com/javonniicurry/Planetary_Ephemeris
+//
+// @theory       Aggregates VSOP87, ELP2000-82, and Meeus algorithms
+// @accuracy     Varies by planet - see individual library documentation
+// @time_scale   Handles time conversion automatically based on celestial body
+//
+// @reference    Meeus, Jean. "Astronomical Algorithms" (2nd Ed., 1998)
+//               Bretagnon & Francou. "VSOP87 Solutions" (1988)
+//               Chapront-Touzé & Chapront. "ELP2000-82" (1983)
+//
+// @showcase     Includes commented showcase code with 250-bar future projection.
+//               Uncomment to display unified planetary data with polyline projections.
+//
+// @open_source  This library is part of an open-source alternative to
+//               proprietary astronomical libraries. Study, modify, and
+//               share freely. We believe knowledge of the cosmos belongs
+//               to everyone.
+//
+// ════════════════════════════════════════════════════════════════
+//   © 2025 BlueprintResearch / Javonnii
+//   Licensed under MIT License
+// ════════════════════════════════════════════════════════════════
+//
+//@version=6
+
+// Import planetary libraries
+import BlueprintResearch/lib_vsop_core/1 as core
+import BlueprintResearch/lib_elp2000_moon/1 as moon
+import BlueprintResearch/lib_vsop87_mercury/1 as mercury
+import BlueprintResearch/lib_vsop87_venus/1 as venus
+import BlueprintResearch/lib_vsop87_mars/1 as mars
+import BlueprintResearch/lib_vsop87_jupiter/1 as jupiter
+import BlueprintResearch/lib_vsop87_saturn/1 as saturn
+import BlueprintResearch/lib_vsop87_uranus/1 as uranus
+import BlueprintResearch/lib_vsop87_neptune/1 as neptune
+import BlueprintResearch/lib_meeus_pluto/1 as pluto
+
+library("lib_ephemeris")
+
+
+
+
+// Planet enumeration
+export enum Planet
+    Sun
+    Moon
+    Mercury
+    Venus
+    Earth
+    Mars
+    Jupiter
+    Saturn
+    Uranus
+    Neptune
+    Pluto
+
+
+
+// @function Normalizes any longitude value to the range [0, 360) degrees.
+// @param lon (float) Longitude in degrees (can be any value, including negative or >360).
+// @returns (float) Normalized longitude in range [0, 360).
+export normalizeLongitude(float lon) =>
+    float norm = lon % 360
+    norm += norm < 0 ? 360 : 0
+    norm
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Helper Functions for Easy Data Access
+// ═══════════════════════════════════════════════════════════════════
+
+// @function Converts a planet string identifier to Planet enum value.
+// @param planetStr (string) Planet name (case-insensitive). Supports formats: "Sun", "☉︎ Sun", "sun", "SUN"
+// @returns (Planet) Corresponding Planet enum. Returns Planet.Sun if string not recognized.
+// @note Supported planet strings: Sun, Moon, Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto
+export string_to_planet(string planetStr) =>
+     str.contains(str.lower(str.trim(planetStr)), "mercury") ? Planet.Mercury :
+     str.contains(str.lower(str.trim(planetStr)), "venus")   ? Planet.Venus   :
+     str.contains(str.lower(str.trim(planetStr)), "earth")   ? Planet.Earth   :
+     str.contains(str.lower(str.trim(planetStr)), "mars")    ? Planet.Mars    :
+     str.contains(str.lower(str.trim(planetStr)), "jupiter") ? Planet.Jupiter :
+     str.contains(str.lower(str.trim(planetStr)), "saturn")  ? Planet.Saturn  :
+     str.contains(str.lower(str.trim(planetStr)), "uranus")  ? Planet.Uranus  :
+     str.contains(str.lower(str.trim(planetStr)), "neptune") ? Planet.Neptune :
+     str.contains(str.lower(str.trim(planetStr)), "pluto")   ? Planet.Pluto   :
+     str.contains(str.lower(str.trim(planetStr)), "moon")    ? Planet.Moon    :
+     str.contains(str.lower(str.trim(planetStr)), "sun")     ? Planet.Sun     :
+     Planet.Sun
+
+// @function Returns planetary longitude with automatic coordinate system selection.
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @param preferGeo (bool) If true, return geocentric; if false, return heliocentric.
+// @returns (float) Longitude in degrees, normalized to range [0, 360).
+// @note Sun and Moon always return geocentric regardless of preference (heliocentric not applicable).
+export get_longitude(Planet p, float t, bool preferGeo) =>
+    if (p == Planet.Sun or p == Planet.Moon or preferGeo)
+        switch p
+            Planet.Sun     => core.get_sun_geo_lon(core.get_julian_millennia(t))
+            Planet.Moon    => moon.get_geo_ecl_lon(core.get_julian_centuries(t))
+            Planet.Mercury => mercury.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Venus   => venus.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Mars    => mars.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Jupiter => jupiter.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Saturn  => saturn.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Uranus  => uranus.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Neptune => neptune.get_geo_lon(core.get_julian_millennia(t))
+            Planet.Pluto   => pluto.get_geo_lon(core.get_julian_centuries(t))
+    else
+        switch p
+            Planet.Sun     => core.get_sun_geo_lon(core.get_julian_millennia(t))  // Sun always geo
+            Planet.Mercury => mercury.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Venus   => venus.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Earth   => core.get_earth_helio_lon(core.get_julian_millennia(t))
+            Planet.Mars    => mars.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Jupiter => jupiter.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Saturn  => saturn.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Uranus  => uranus.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Neptune => neptune.get_helio_lon(core.get_julian_millennia(t))
+            Planet.Pluto   => pluto.get_helio_lon(core.get_julian_centuries(t))
+
+// @function Returns planetary geocentric equatorial declination.
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @returns (float) Geocentric declination in degrees, range [-90, +90] where positive is north.
+// @note Declination is always geocentric (no heliocentric equivalent in library).
+export get_declination(Planet p, float t) =>
+    switch p
+        Planet.Sun     => core.get_sun_decl(core.get_julian_millennia(t))
+        Planet.Moon    => moon.get_declination(core.get_julian_centuries(t))
+        Planet.Mercury => mercury.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Venus   => venus.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Mars    => mars.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Jupiter => jupiter.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Saturn  => saturn.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Uranus  => uranus.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Neptune => neptune.get_geo_decl(core.get_julian_millennia(t))
+        Planet.Pluto   => pluto.get_geo_decl(core.get_julian_centuries(t))
+
+// @function Returns planetary geocentric longitude speed (rate of change).
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion. Returns na for Moon.
+// @note Speed is always geocentric (no heliocentric equivalent in library). Moon speed calculation not implemented.
+export get_speed(Planet p, float t) =>
+    switch p
+        Planet.Sun     => core.get_sun_geo_speed(t)
+        Planet.Moon    => na  // Moon geocentric speed calculation not implemented
+        Planet.Mercury => mercury.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Venus   => venus.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Mars    => mars.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Jupiter => jupiter.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Saturn  => saturn.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Uranus  => uranus.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Neptune => neptune.get_geo_speed(core.get_julian_millennia(t))
+        Planet.Pluto   => pluto.get_geo_speed(core.get_julian_centuries(t))
+
+
+
+// ──────────────── Averages: Planetary Longitude (Geo & Helio) ────────────────
+
+
+// @function get_avg6_geo_lon
+// @description Returns the arithmetic average of the geocentric longitudes for the six outer planets: Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average geocentric longitude of the six outer planets in degrees, range [0, 360).
+export get_avg6_geo_lon(float t) =>
+    array<float> longs = array.from(
+         mars.get_geo_lon(core.get_julian_millennia(t)),
+         jupiter.get_geo_lon(core.get_julian_millennia(t)),
+         saturn.get_geo_lon(core.get_julian_millennia(t)),
+         uranus.get_geo_lon(core.get_julian_millennia(t)),
+         neptune.get_geo_lon(core.get_julian_millennia(t)),
+         pluto.get_geo_lon(core.get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// @function get_avg6_helio_lon
+// @description Returns the arithmetic average of the heliocentric longitudes for the six outer planets: Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average heliocentric longitude of the six outer planets in degrees, range [0, 360).
+export get_avg6_helio_lon(float t) =>
+    array<float> longs = array.from(
+         mars.get_helio_lon(core.get_julian_millennia(t)),
+         jupiter.get_helio_lon(core.get_julian_millennia(t)),
+         saturn.get_helio_lon(core.get_julian_millennia(t)),
+         uranus.get_helio_lon(core.get_julian_millennia(t)),
+         neptune.get_helio_lon(core.get_julian_millennia(t)),
+         pluto.get_helio_lon(core.get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// @function get_avg8_geo_lon
+// @description Returns the arithmetic average of the geocentric longitudes for all eight classical planets: Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average geocentric longitude of all eight classical planets in degrees, range [0, 360).
+export get_avg8_geo_lon(float t) =>
+    array<float> longs = array.from(
+         mercury.get_geo_lon(core.get_julian_millennia(t)),
+         venus.get_geo_lon(core.get_julian_millennia(t)),
+         mars.get_geo_lon(core.get_julian_millennia(t)),
+         jupiter.get_geo_lon(core.get_julian_millennia(t)),
+         saturn.get_geo_lon(core.get_julian_millennia(t)),
+         uranus.get_geo_lon(core.get_julian_millennia(t)),
+         neptune.get_geo_lon(core.get_julian_millennia(t)),
+         pluto.get_geo_lon(core.get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+
+// @function get_avg8_helio_lon
+// @description Returns the arithmetic average of the heliocentric longitudes for all eight classical planets: Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average heliocentric longitude of all eight classical planets in degrees, range [0, 360).
+export get_avg8_helio_lon(float t) =>
+    array<float> longs = array.from(
+         mercury.get_helio_lon(core.get_julian_millennia(t)),
+         venus.get_helio_lon(core.get_julian_millennia(t)),
+         mars.get_helio_lon(core.get_julian_millennia(t)),
+         jupiter.get_helio_lon(core.get_julian_millennia(t)),
+         saturn.get_helio_lon(core.get_julian_millennia(t)),
+         uranus.get_helio_lon(core.get_julian_millennia(t)),
+         neptune.get_helio_lon(core.get_julian_millennia(t)),
+         pluto.get_helio_lon(core.get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// ──────────────── RETROGRADE MOTION STATE ────────────────
+
+
+// @function Returns true if the planet is currently in retrograde motion (geocentric speed < 0) == 0 = stationary.
+// @param p The planet to check.
+// @param t Time in Unix timestamp (milliseconds).
+// @returns true if the planet is in retrograde, false otherwise.
+export is_retrograde(Planet p, float t) =>
+    get_speed(p, t) < 0.0
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHOWCASE PLOT - Uncomment for TradingView publication
+// Demonstrates the unified ephemeris API with 100-bar future projection
+// Shows Mars as an example planet with longitude, declination, and speed
+// ═══════════════════════════════════════════════════════════════════════════
+
+// var int LOOK_AHEAD = 250
+// var Planet DEMO_PLANET = Planet.Mars
+//
+// // Polyline references (persist across bars)
+// var polyline lon_line = na
+// var polyline decl_line = na
+// var polyline speed_line = na
+// var polyline avg6_line = na
+//
+// // Historical data using unified API
+// lon = get_longitude(DEMO_PLANET, time, true)      // geocentric
+// decl = get_declination(DEMO_PLANET, time)
+
+// speed = get_speed(DEMO_PLANET, time)
+// is_retro = is_retrograde(DEMO_PLANET, time)
+//
+// // Planetary averages
+// avg6 = get_avg6_geo_lon(time)
+// avg8 = get_avg8_geo_lon(time)
+//
+// // Plot historical data
+// plot(lon, "Mars Geocentric Longitude", color=color.red)
+// plot(decl, "Mars Declination", color=color.orange)
+// plot(speed * 100, "Mars Speed x100", color=is_retro ? color.purple : color.white)
+// plot(avg6, "Avg6 Geo Lon", color=color.gray)
+// plot(avg8, "Avg8 Geo Lon", color=color.silver)
+//
+// // Future projection using polylines
+// if barstate.islast
+//     // Delete old polylines
+//     polyline.delete(lon_line)
+//     polyline.delete(decl_line)
+//     polyline.delete(speed_line)
+//     polyline.delete(avg6_line)
+//
+//     // Build point arrays (start with current bar for smooth connection)
+//     array<chart.point> lon_pts = array.new<chart.point>()
+//     array<chart.point> decl_pts = array.new<chart.point>()
+//     array<chart.point> speed_pts = array.new<chart.point>()
+//     array<chart.point> avg6_pts = array.new<chart.point>()
+//
+//     // First point = current bar (connects polyline to historical plot)
+//     array.push(lon_pts, chart.point.from_time(time, lon))
+//     array.push(decl_pts, chart.point.from_time(time, decl))
+//     array.push(speed_pts, chart.point.from_time(time, speed * 100))
+//     array.push(avg6_pts, chart.point.from_time(time, avg6))
+//
+//     // Add future points
+//     for i = 1 to LOOK_AHEAD
+//         future_time = core.get_future_time(time, i)
+//
+//         f_lon = get_longitude(DEMO_PLANET, future_time, true)
+//         f_decl = get_declination(DEMO_PLANET, future_time)
+//         f_speed = get_speed(DEMO_PLANET, future_time)
+//         f_avg6 = get_avg6_geo_lon(future_time)
+//
+//         array.push(lon_pts, chart.point.from_time(future_time, f_lon))
+//         array.push(decl_pts, chart.point.from_time(future_time, f_decl))
+//         array.push(speed_pts, chart.point.from_time(future_time, f_speed * 100))
+//         array.push(avg6_pts, chart.point.from_time(future_time, f_avg6))
+//
+//     // Create polylines
+//     lon_line := polyline.new(lon_pts, xloc=xloc.bar_time,
+//                 line_color=color.new(color.red, 50), line_style=line.style_dotted, force_overlay=false)
+//     decl_line := polyline.new(decl_pts, xloc=xloc.bar_time,
+//                  line_color=color.new(color.orange, 50), line_style=line.style_dotted, force_overlay=false)
+//     speed_line := polyline.new(speed_pts, xloc=xloc.bar_time,
+//                   line_color=color.new(color.white, 50), line_style=line.style_dotted, force_overlay=false)
+//     avg6_line := polyline.new(avg6_pts, xloc=xloc.bar_time,
+//                  line_color=color.new(color.gray, 50), line_style=line.style_dotted, force_overlay=false)

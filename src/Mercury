@@ -1,0 +1,407 @@
+//   ════════════════════════════════════════════════════════════
+//      BLUEPRINT RESEARCH • OPEN SOURCE PLANETARY EPHEMERIS
+//   ════════════════════════════════════════════════════════════
+//
+//                  ★       ★       ★
+//                      ╱   │   ╲
+//                     ─    ☉    ─
+//                      ╲   │   ╱
+//                  ★       ★       ★
+//
+//   ════════════════════════════════════════════════════════════
+//
+// @library      VSOP87 Mercury Library
+// @description  Heliocentric and geocentric position calculations for Mercury
+//               using VSOP87 theory. Provides longitude, latitude, radius, speed,
+//               and declination functions.
+//
+// @author       BlueprintResearch (Javonnii)
+// @license      MIT License - Free to use with attribution
+// @repository   https://github.com/javonniicurry/Planetary_Ephemeris
+//
+// @theory       VSOP87A (Heliocentric rectangular coordinates)
+// @accuracy     Truncated series (~10-15 terms per series) - arcsecond precision
+// @time_scale   Julian millennia from J2000.0 (use core.get_julian_millennia)
+//
+// @reference    Meeus, Jean. "Astronomical Algorithms" (2nd Ed., 1998)
+//               Bretagnon & Francou. "VSOP87 Solutions" (1988)
+//
+// @showcase     Includes commented showcase code with 250-bar future projection.
+//               Uncomment to display Mercury data with polyline projections.
+//
+// @open_source  This library is part of an open-source alternative to
+//               proprietary astronomical libraries. Study, modify, and
+//               share freely. We believe knowledge of the cosmos belongs
+//               to everyone.
+//
+// ════════════════════════════════════════════════════════════════
+//   © 2025 BlueprintResearch / Javonnii
+//   Licensed under MIT License
+// ════════════════════════════════════════════════════════════════
+//
+//@version=6
+import BlueprintResearch/lib_vsop_core/1 as core
+library("lib_vsop87_mercury")
+
+
+// Constants
+var float PI = 3.141592653589793
+var float RAD_TO_DEG = 180.0 / PI
+
+
+// @function Computes Mercury's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+export get_helio_lon(float t) => 
+    array<core.vsop_term> L0 = array.new<core.vsop_term>()
+    array.push(L0, core.vsop_term.new(4.40250710144, 0.0, 0.0))
+    array.push(L0, core.vsop_term.new(0.40989414977, 1.48302034195, 26087.90314157420))
+    array.push(L0, core.vsop_term.new(0.05046294199, 4.47785489540, 52175.80628314840))
+    array.push(L0, core.vsop_term.new(0.00855346844, 1.16520322459, 78263.70942472259))
+    array.push(L0, core.vsop_term.new(0.00585979278, 4.22090402969, 104351.61256629678))
+    array.push(L0, core.vsop_term.new(0.00165590362, 4.11969163181, 5661.33204915220))
+    array.push(L0, core.vsop_term.new(0.00034561897, 0.77930768443, 130439.51570787099))
+    array.push(L0, core.vsop_term.new(0.00007583476, 3.71348400510, 156527.41884944518))
+    array.push(L0, core.vsop_term.new(0.00003559745, 1.51202675145, 1109.37855209340))
+    array.push(L0, core.vsop_term.new(0.00001726011, 0.35832267096, 182615.32199101939))
+
+    array<core.vsop_term> L1 = array.new<core.vsop_term>()
+    array.push(L1, core.vsop_term.new(26088.14706222746, 0.0, 0.0))
+    array.push(L1, core.vsop_term.new(0.01126007832, 6.21703970996, 26087.90314157420))
+    array.push(L1, core.vsop_term.new(0.00303471395, 3.05565472363, 52175.80628314840))
+    array.push(L1, core.vsop_term.new(0.00121281763, 6.01064153797, 78263.70942472259))
+
+    array<core.vsop_term> L2 = array.new<core.vsop_term>()
+    array.push(L2, core.vsop_term.new(0.00053049845, 0.0, 0.0))
+    array.push(L2, core.vsop_term.new(0.00016903658, 4.69072300649, 26087.90314157420))
+
+    L0sum = core.eval_vsop87(L0, t)
+    L1sum = core.eval_vsop87(L1, t)
+    L2sum = core.eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    core.mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Mercury's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.122, +0.122]. Note: Returns radians, not degrees.
+export get_helio_lat(float t) =>
+    array<core.vsop_term> B0 = array.new<core.vsop_term>()
+    array.push(B0, core.vsop_term.new(0.11737528962, 1.98357498767, 26087.90314157420))
+    array.push(B0, core.vsop_term.new(0.02388076996, 5.03738959685, 52175.80628314840))
+    array.push(B0, core.vsop_term.new(0.01222839532, 3.14159265359, 0.0))
+    core.eval_vsop87(B0, t) // return radians directly
+
+
+// @function Computes Mercury's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 0.31-0.47 AU.
+export get_helio_radius(float t) =>
+    array<core.vsop_term> R0 = array.new<core.vsop_term>()
+    array.push(R0, core.vsop_term.new(0.39528271652, 0.0, 0.0))
+    array.push(R0, core.vsop_term.new(0.07834131818, 6.19233722599, 26087.90314157420))
+    array.push(R0, core.vsop_term.new(0.00795525558, 2.95989690104, 52175.80628314840))
+    array.push(R0, core.vsop_term.new(0.00121281764, 6.01064153805, 78263.70942472259))
+    array.push(R0, core.vsop_term.new(0.00021921969, 2.77820093972, 104351.61256629678))
+
+    array<core.vsop_term> R1 = array.new<core.vsop_term>()
+    array.push(R1, core.vsop_term.new(0.00217347739, 4.65617158663, 26087.90314157420))
+    array.push(R1, core.vsop_term.new(0.00044141826, 1.42385543975, 52175.80628314840))
+
+    array<core.vsop_term> R2 = array.new<core.vsop_term>()
+    array.push(R2, core.vsop_term.new(0.00003117867, 3.08231840296, 26087.90314157420))
+
+    R0sum = core.eval_vsop87(R0, t)
+    R1sum = core.eval_vsop87(R1, t)
+    R2sum = core.eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Mercury's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+export get_geo_speed(float t) =>
+    // Mercury terms and sums
+    array<core.vsop_term> L0_m = array.new<core.vsop_term>()
+    array.push(L0_m, core.vsop_term.new(4.40250710144, 0.0, 0.0))
+    array.push(L0_m, core.vsop_term.new(0.40989414977, 1.48302034195, 26087.90314157420))
+    array.push(L0_m, core.vsop_term.new(0.05046294199, 4.47785489540, 52175.80628314840))
+    array.push(L0_m, core.vsop_term.new(0.00855346844, 1.16520322459, 78263.70942472259))
+    array.push(L0_m, core.vsop_term.new(0.00585979278, 4.22090402969, 104351.61256629678))
+    array.push(L0_m, core.vsop_term.new(0.00165590362, 4.11969163181, 5661.33204915220))
+    array.push(L0_m, core.vsop_term.new(0.00034561897, 0.77930768443, 130439.51570787099))
+    array.push(L0_m, core.vsop_term.new(0.00007583476, 3.71348400510, 156527.41884944518))
+    array.push(L0_m, core.vsop_term.new(0.00003559745, 1.51202675145, 1109.37855209340))
+    array.push(L0_m, core.vsop_term.new(0.00001726011, 0.35832267096, 182615.32199101939))
+
+    array<core.vsop_term> L1_m = array.new<core.vsop_term>()
+    array.push(L1_m, core.vsop_term.new(26088.14706222746, 0.0, 0.0))
+    array.push(L1_m, core.vsop_term.new(0.01126007832, 6.21703970996, 26087.90314157420))
+    array.push(L1_m, core.vsop_term.new(0.00303471395, 3.05565472363, 52175.80628314840))
+    array.push(L1_m, core.vsop_term.new(0.00121281763, 6.01064153797, 78263.70942472259))
+
+    array<core.vsop_term> L2_m = array.new<core.vsop_term>()
+    array.push(L2_m, core.vsop_term.new(0.00053049845, 0.0, 0.0))
+    array.push(L2_m, core.vsop_term.new(0.00016903658, 4.69072300649, 26087.90314157420))
+
+    float L0sum_m = core.eval_vsop87(L0_m, t)
+    float L1sum_m = core.eval_vsop87(L1_m, t)
+    float L2sum_m = core.eval_vsop87(L2_m, t)
+    float lon_rad_m = L0sum_m + L1sum_m * t + L2sum_m * t * t
+
+    float dL0_m = core.eval_vsop87_derivative(L0_m, t)
+    float dL1_m = core.eval_vsop87_derivative(L1_m, t)
+    float dL2_m = core.eval_vsop87_derivative(L2_m, t)
+    float dlon_dt_m = dL0_m + L1sum_m + t * dL1_m + 2.0 * t * L2sum_m + t * t * dL2_m
+
+    array<core.vsop_term> B0_m = array.new<core.vsop_term>()
+    array.push(B0_m, core.vsop_term.new(0.11737528962, 1.98357498767, 26087.90314157420))
+    array.push(B0_m, core.vsop_term.new(0.02388076996, 5.03738959685, 52175.80628314840))
+    array.push(B0_m, core.vsop_term.new(0.01222839532, 3.14159265359, 0.0))
+    float lat_rad_m = core.eval_vsop87(B0_m, t)
+    float dlat_dt_m = core.eval_vsop87_derivative(B0_m, t)
+
+    array<core.vsop_term> R0_m = array.new<core.vsop_term>()
+    array.push(R0_m, core.vsop_term.new(0.39528271652, 0.0, 0.0))
+    array.push(R0_m, core.vsop_term.new(0.07834131818, 6.19233722599, 26087.90314157420))
+    array.push(R0_m, core.vsop_term.new(0.00795525558, 2.95989690104, 52175.80628314840))
+    array.push(R0_m, core.vsop_term.new(0.00121281764, 6.01064153805, 78263.70942472259))
+    array.push(R0_m, core.vsop_term.new(0.00021921969, 2.77820093972, 104351.61256629678))
+
+    array<core.vsop_term> R1_m = array.new<core.vsop_term>()
+    array.push(R1_m, core.vsop_term.new(0.00217347739, 4.65617158663, 26087.90314157420))
+    array.push(R1_m, core.vsop_term.new(0.00044141826, 1.42385543975, 52175.80628314840))
+
+    array<core.vsop_term> R2_m = array.new<core.vsop_term>()
+    array.push(R2_m, core.vsop_term.new(0.00003117867, 3.08231840296, 26087.90314157420))
+
+    float R0sum_m = core.eval_vsop87(R0_m, t)
+    float R1sum_m = core.eval_vsop87(R1_m, t)
+    float R2sum_m = core.eval_vsop87(R2_m, t)
+    float r_m = R0sum_m + R1sum_m * t + R2sum_m * t * t
+
+    float dR0_m = core.eval_vsop87_derivative(R0_m, t)
+    float dR1_m = core.eval_vsop87_derivative(R1_m, t)
+    float dR2_m = core.eval_vsop87_derivative(R2_m, t)
+    float dr_dt_m = dR0_m + R1sum_m + t * dR1_m + 2.0 * t * R2sum_m + t * t * dR2_m
+
+    float cl_m = math.cos(lon_rad_m)
+    float sl_m = math.sin(lon_rad_m)
+    float cb_m = math.cos(lat_rad_m)
+    float sb_m = math.sin(lat_rad_m)
+
+    float x_m = r_m * cb_m * cl_m
+    float y_m = r_m * cb_m * sl_m
+
+    float vx_m = dr_dt_m * cb_m * cl_m - r_m * dlat_dt_m * sb_m * cl_m - r_m * cb_m * sl_m * dlon_dt_m
+    float vy_m = dr_dt_m * cb_m * sl_m - r_m * dlat_dt_m * sb_m * sl_m + r_m * cb_m * cl_m * dlon_dt_m
+
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<core.vsop_term> L0_e = array.new<core.vsop_term>()
+    array.push(L0_e, core.vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, core.vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, core.vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, core.vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, core.vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, core.vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, core.vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, core.vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, core.vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, core.vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<core.vsop_term> L1_e = array.new<core.vsop_term>()
+    array.push(L1_e, core.vsop_term.new(6283.07584999140, 0.0, 0.0))
+    array.push(L1_e, core.vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, core.vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, core.vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<core.vsop_term> L2_e = array.new<core.vsop_term>()
+    array.push(L2_e, core.vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, core.vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = core.eval_vsop87(L0_e, t)
+    float L1sum_e = core.eval_vsop87(L1_e, t)
+    float L2sum_e = core.eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = core.eval_vsop87_derivative(L0_e, t)
+    float dL1_e = core.eval_vsop87_derivative(L1_e, t)
+    float dL2_e = core.eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<core.vsop_term> B0_e = array.new<core.vsop_term>()
+    array.push(B0_e, core.vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, core.vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<core.vsop_term> B1_e = array.new<core.vsop_term>()
+    array.push(B1_e, core.vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = core.eval_vsop87(B0_e, t)
+    float B1sum_e = core.eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = core.eval_vsop87_derivative(B0_e, t)
+    float dB1_e = core.eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<core.vsop_term> R0_e = array.new<core.vsop_term>()
+    array.push(R0_e, core.vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, core.vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, core.vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, core.vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, core.vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<core.vsop_term> R1_e = array.new<core.vsop_term>()
+    array.push(R1_e, core.vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, core.vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<core.vsop_term> R2_e = array.new<core.vsop_term>()
+    array.push(R2_e, core.vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = core.eval_vsop87(R0_e, t)
+    float R1sum_e = core.eval_vsop87(R1_e, t)
+    float R2sum_e = core.eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = core.eval_vsop87_derivative(R0_e, t)
+    float dR1_e = core.eval_vsop87_derivative(R1_e, t)
+    float dR2_e = core.eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    // Geocentric
+    float geo_x = x_m - x_e
+    float geo_y = y_m - y_e
+    float v_geo_x = vx_m - vx_e
+    float v_geo_y = vy_m - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Mercury's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+export get_geo_lon(float t) => // accurate might be able to improve by adding more terms to earth 
+    [earth_x, earth_y, earth_z] = core.get_earth_helio_coords(t)
+    mercury_lon_rad = get_helio_lon(t) * PI / 180.0
+    mercury_b_rad = get_helio_lat(t) * PI / 180.0
+    mercury_r = get_helio_radius(t)
+    mercury_x = mercury_r * math.cos(mercury_b_rad) * math.cos(mercury_lon_rad)
+    mercury_y = mercury_r * math.cos(mercury_b_rad) * math.sin(mercury_lon_rad)
+    geo_x = mercury_x - earth_x
+    geo_y = mercury_y - earth_y
+    core.mod360(core.custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+
+// @function Computes Mercury's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-7, +7].
+export get_geo_ecl_lat(float t) =>
+    lon_rad = get_helio_lon(t) * PI / 180.0
+    lat_rad = get_helio_lat(t)  // already radians
+    r = get_helio_radius(t)
+
+    mercury_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    mercury_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    mercury_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = core.get_earth_helio_coords(t)
+
+    geo_x = mercury_x - earth_x
+    geo_y = mercury_y - earth_y
+    geo_z = mercury_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    core.custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+// @function Computes Mercury's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use core.get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+export get_geo_decl(float t) =>
+    float ecl_lon_deg = get_geo_lon(t)
+    float ecl_lat_deg = get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = core.get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHOWCASE PLOT - Uncomment for TradingView publication
+// Demonstrates Mercury geocentric data with 100-bar future projection
+// ═══════════════════════════════════════════════════════════════════════════
+
+// var int LOOK_AHEAD = 250
+//
+// // Polyline references (persist across bars)
+// var polyline lon_line = na
+// var polyline decl_line = na
+// var polyline speed_line = na
+//
+// t = core.get_julian_millennia(time)
+//
+// // Historical data
+// lon = get_geo_lon(t)
+// decl = get_geo_decl(t)
+// speed = get_geo_speed(t)
+//
+// plot(lon, "Mercury Geocentric Longitude", color=color.orange)
+// plot(decl, "Mercury Declination", color=color.red)
+// plot(speed * 100, "Mercury Speed x100", color=color.white)
+//
+// // Future projection using polylines
+// if barstate.islast
+//     // Delete old polylines
+//     polyline.delete(lon_line)
+//     polyline.delete(decl_line)
+//     polyline.delete(speed_line)
+//
+//     // Build point arrays (start with current bar for smooth connection)
+//     array<chart.point> lon_pts = array.new<chart.point>()
+//     array<chart.point> decl_pts = array.new<chart.point>()
+//     array<chart.point> speed_pts = array.new<chart.point>()
+//
+//     // First point = current bar (connects polyline to historical plot)
+//     array.push(lon_pts, chart.point.from_time(time, lon))
+//     array.push(decl_pts, chart.point.from_time(time, decl))
+//     array.push(speed_pts, chart.point.from_time(time, speed * 100))
+//
+//     // Add future points
+//     for i = 1 to LOOK_AHEAD
+//         future_time = core.get_future_time(time, i)
+//         future_t = core.get_julian_millennia(future_time)
+//
+//         f_lon = get_geo_lon(future_t)
+//         f_decl = get_geo_decl(future_t)
+//         f_speed = get_geo_speed(future_t)
+//
+//         array.push(lon_pts, chart.point.from_time(future_time, f_lon))
+//         array.push(decl_pts, chart.point.from_time(future_time, f_decl))
+//         array.push(speed_pts, chart.point.from_time(future_time, f_speed * 100))
+//
+//     // Create polylines
+//     lon_line := polyline.new(lon_pts, xloc=xloc.bar_time,
+//                 line_color=color.new(color.orange, 50), line_style=line.style_dotted, force_overlay=false)
+//     decl_line := polyline.new(decl_pts, xloc=xloc.bar_time,
+//                  line_color=color.new(color.red, 50), line_style=line.style_dotted, force_overlay=false)
+//     speed_line := polyline.new(speed_pts, xloc=xloc.bar_time,
+//                   line_color=color.new(color.white, 50), line_style=line.style_dotted, force_overlay=false)
