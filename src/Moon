@@ -17,7 +17,7 @@
 //
 // @author       BlueprintResearch (Javonnii)
 // @license      MIT License - Free to use with attribution
-// @repository   https://github.com/javonniicurry/Planetary_Ephemeris
+
 //
 // @theory       ELP2000-82 (Lunar theory by Chapront-Touzé & Chapront)
 // @accuracy     Truncated to 48 main terms - 10" precision
@@ -35,10 +35,11 @@
 //               to everyone.
 //
 // ════════════════════════════════════════════════════════════════
-//   © 2025 BlueprintResearch / Javonnii
+//   © 2026 BlueprintResearch / Javonnii
 //   Licensed under MIT License
 // ════════════════════════════════════════════════════════════════
 //
+
 //@version=6
 import BlueprintResearch/lib_vsop_core/1 as core
 library("lib_elp2000_moon")
@@ -160,27 +161,35 @@ eval_sigma_b(float D, float M, float Mp, float F, float E) =>
         sum += amp * math.sin(arg)
     sum / 1000000.0
 
-// Computes the geocentric ecliptic longitude of the Moon (in degrees, 0 to 360).
+// @function Returns geocentric ecliptic longitude of the Moon.
+// @param T (float) Julian centuries from J2000.0 (use core.get_julian_centuries).
+// @returns (float) Longitude in degrees, range [0, 360).
 export get_geo_ecl_lon(float T) =>
     [Lp, D, M, Mp, F] = get_fundamentals(T)
     E = get_E(T)
     sigma_l = eval_sigma_l(D, M, Mp, F, E)
     core.mod360(Lp + sigma_l)
 
-// Computes the geocentric ecliptic latitude of the Moon (in degrees).
+// @function Returns geocentric ecliptic latitude of the Moon.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Latitude in degrees.
 export get_geo_ecl_lat(float T) =>
     [Lp, D, M, Mp, F] = get_fundamentals(T)
     E = get_E(T)
     sigma_b = eval_sigma_b(D, M, Mp, F, E)
     sigma_b
 
-// Computes the mean obliquity of the ecliptic (in degrees).
+// @function Returns mean obliquity of the ecliptic.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Obliquity in degrees.
 export get_obliquity(float T) =>
     float base = 23.0 + 26.0 / 60.0 + 21.448 / 3600.0
     float delta = 46.815 * T + 0.00059 * T*T - 0.001813 * T*T*T
     base - delta / 3600.0
 
-// Computes the geocentric equatorial declination of the Moon (in degrees).
+// @function Returns geocentric equatorial declination of the Moon.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees, range [-90, +90] where positive is north.
 export get_declination(float T) =>
     float lambda = get_geo_ecl_lon(T)
     float beta = get_geo_ecl_lat(T)
@@ -191,13 +200,31 @@ export get_declination(float T) =>
     float sin_delta = math.sin(beta_rad) * math.cos(eps_rad) + math.cos(beta_rad) * math.sin(eps_rad) * math.sin(lambda_rad)
     math.asin(sin_delta) * RAD_TO_DEG
 
-// Computes the mean longitude of the Moon's ascending node (in degrees).
-get_mean_node_lon(float T) =>
+// Internal: raw mean node calculation (not wrapped)
+_mean_node_raw(float T) =>
     125.04452 - 1934.136261 * T + 0.0020708 * T*T + T*T*T / 450000.0
 
-// Computes the true longitude of the Moon's ascending node (in degrees, 0 to 360).
-export get_true_node_lon(float T) =>
-    node = get_mean_node_lon(T)
+// @function Returns mean longitude of the Moon's North Node (ascending node).
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360).
+// @note Mean node is a simple averaged calculation, reducing computational error. Used for declination calculations.
+export get_mean_north_node_lon(float T) =>
+    core.mod360(_mean_node_raw(T))
+
+
+// @function Returns mean longitude of the Moon's South Node (descending node).
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360). Equals North Node + 180°.
+export get_mean_south_node_lon(float T) =>
+    core.mod360(get_mean_north_node_lon(T) + 180.0)
+
+
+// @function Returns true longitude of the Moon's North Node with perturbation corrections.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360).
+// @note True node includes periodic perturbations but formula is low precision. Consider using mean node for consistency.
+export get_true_north_node_lon(float T) =>
+    node = _mean_node_raw(T)
     D = 297.85036 + 445267.111480 * T - 0.0019142 * T*T + T*T*T / 189474.0
     M = 357.52772 + 35999.050340 * T - 0.0001603 * T*T - T*T*T / 300000.0
     Mp = 134.96298 + 477198.867398 * T + 0.0086972 * T*T + T*T*T / 56250.0
@@ -210,19 +237,26 @@ export get_true_node_lon(float T) =>
          - 0.0801 * math.sin(DEG_TO_RAD * (2 * D + Mp))
     core.mod360(node)
 
-// Computes the true longitude of the Moon's descending (south) node (in degrees, 0 to 360).
+// @function Returns true longitude of the Moon's South Node with perturbation corrections.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360). Equals True North Node + 180°.
 export get_true_south_node_lon(float T) =>
-    core.mod360(get_true_node_lon(T) + 180.0)
+    core.mod360(get_true_north_node_lon(T) + 180.0)
 
-// Computes the declination of the Moon's ascending node (in degrees).
-export get_node_declination(float T) =>
-    float a_ = get_true_node_lon(T)
+// @function Returns declination of the Moon's North Node.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees, range [-23.4, +23.4] (bounded by obliquity).
+// @note Uses mean node for calculation (more consistent than true node).
+export get_north_node_declination(float T) =>
+    float a_ = get_mean_north_node_lon(T)
     float e_ = get_obliquity(T)
     math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
 
-// Computes the declination of the Moon's descending (south) node (in degrees).
+// @function Returns declination of the Moon's South Node.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees. Inverse of North Node declination.
 export get_south_node_declination(float T) =>
-    float a_ = core.mod360(get_true_node_lon(T) + 180.0)
+    float a_ = core.mod360(get_mean_north_node_lon(T) + 180.0)
     float e_ = get_obliquity(T)
     math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
 
@@ -232,58 +266,62 @@ export get_south_node_declination(float T) =>
 // Note: Moon uses Julian centuries and has no speed function
 // ═══════════════════════════════════════════════════════════════════════════
 
-// var int LOOK_AHEAD = 250
-//
-// // Polyline references (persist across bars)
-// var polyline lon_line = na
-// var polyline decl_line = na
-// var polyline node_line = na
-//
-// T = core.get_julian_centuries(time)
-//
-// // Historical data
-// lon = get_geo_ecl_lon(T)
-// decl = get_declination(T)
-// node_lon = get_true_node_lon(T)
-//
-// plot(lon, "Moon Geocentric Longitude", color=color.silver)
-// plot(decl, "Moon Declination", color=color.red)
-// plot(node_lon, "Lunar Node Longitude", color=color.lime)
-//
-// // Future projection using polylines
-// if barstate.islast
-//     // Delete old polylines
-//     polyline.delete(lon_line)
-//     polyline.delete(decl_line)
-//     polyline.delete(node_line)
-//
-//     // Build point arrays (start with current bar for smooth connection)
-//     array<chart.point> lon_pts = array.new<chart.point>()
-//     array<chart.point> decl_pts = array.new<chart.point>()
-//     array<chart.point> node_pts = array.new<chart.point>()
-//
-//     // First point = current bar (connects polyline to historical plot)
-//     array.push(lon_pts, chart.point.from_time(time, lon))
-//     array.push(decl_pts, chart.point.from_time(time, decl))
-//     array.push(node_pts, chart.point.from_time(time, node_lon))
-//
-//     // Add future points
-//     for i = 1 to LOOK_AHEAD
-//         future_time = core.get_future_time(time, i)
-//         future_T = core.get_julian_centuries(future_time)
-//
-//         f_lon = get_geo_ecl_lon(future_T)
-//         f_decl = get_declination(future_T)
-//         f_node = get_true_node_lon(future_T)
-//
-//         array.push(lon_pts, chart.point.from_time(future_time, f_lon))
-//         array.push(decl_pts, chart.point.from_time(future_time, f_decl))
-//         array.push(node_pts, chart.point.from_time(future_time, f_node))
-//
-//     // Create polylines
-//     lon_line := polyline.new(lon_pts, xloc=xloc.bar_time,
-//                 line_color=color.new(color.silver, 50), line_style=line.style_dotted, force_overlay=false)
-//     decl_line := polyline.new(decl_pts, xloc=xloc.bar_time,
-//                  line_color=color.new(color.red, 50), line_style=line.style_dotted, force_overlay=false)
-//     node_line := polyline.new(node_pts, xloc=xloc.bar_time,
-//                  line_color=color.new(color.lime, 50), line_style=line.style_dotted, force_overlay=false)
+var int LOOK_AHEAD = 250
+
+// Polyline references (persist across bars)
+var polyline lon_line = na
+var polyline decl_line = na
+var polyline node_line = na
+
+T = core.get_julian_centuries(time)
+
+// Historical data
+lon = get_geo_ecl_lon(T)
+decl = get_declination(T)
+mean_node_lon = get_mean_north_node_lon(T)
+
+
+
+plot(lon, "Moon Geocentric Longitude", color=color.silver)
+plot(decl, "Moon Declination", color=color.red)
+plot(mean_node_lon, "Lunar Node Longitude", color=color.lime)
+
+
+
+// Future projection using polylines
+if barstate.islast
+    // Delete old polylines
+    polyline.delete(lon_line)
+    polyline.delete(decl_line)
+    polyline.delete(node_line)
+
+    // Build point arrays (start with current bar for smooth connection)
+    array<chart.point> lon_pts = array.new<chart.point>()
+    array<chart.point> decl_pts = array.new<chart.point>()
+    array<chart.point> node_pts = array.new<chart.point>()
+
+    // First point = current bar (connects polyline to historical plot)
+    array.push(lon_pts, chart.point.from_time(time, lon))
+    array.push(decl_pts, chart.point.from_time(time, decl))
+    array.push(node_pts, chart.point.from_time(time, mean_node_lon))
+
+    // Add future points
+    for i = 1 to LOOK_AHEAD
+        future_time = core.get_future_time(time, i)
+        future_T = core.get_julian_centuries(future_time)
+
+        f_lon = get_geo_ecl_lon(future_T)
+        f_decl = get_declination(future_T)
+        f_node = get_mean_north_node_lon(future_T)
+
+        array.push(lon_pts, chart.point.from_time(future_time, f_lon))
+        array.push(decl_pts, chart.point.from_time(future_time, f_decl))
+        array.push(node_pts, chart.point.from_time(future_time, f_node))
+
+    // Create polylines
+    lon_line := polyline.new(lon_pts, xloc=xloc.bar_time,
+                line_color=color.new(color.silver, 50), line_style=line.style_dotted, force_overlay=false)
+    decl_line := polyline.new(decl_pts, xloc=xloc.bar_time,
+                 line_color=color.new(color.red, 50), line_style=line.style_dotted, force_overlay=false)
+    node_line := polyline.new(node_pts, xloc=xloc.bar_time,
+                 line_color=color.new(color.lime, 50), line_style=line.style_dotted, force_overlay=false)

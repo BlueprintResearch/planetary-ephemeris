@@ -1,0 +1,141 @@
+Consolidated planetary ephemeris library with improved accuracy. Supersedes previous individual planet libraries (lib_vsop_core, lib_vsop_mercury, lib_vsop_venus, etc.). One import gives you geocentric/heliocentric positions for all 10 solar system bodies.
+
+
+█ [b]ACCURACY — VALIDATED AGAINST JPL DE440[/b]
+
+Every body was validated against NASA's DE440 ephemeris (via Skyfield) across [b]250 years (1850–2100)[/b]. Using only [b]1.6% of the full VSOP87D theory[/b] (511 of 31,577 terms), this library achieves sub-arcminute accuracy for all planets:
+
+  [b]Sun[/b]         0.004°  (14 arcseconds)
+  [b]Mercury[/b]     0.005°  (18")
+  [b]Venus[/b]       0.006°  (22")
+  [b]Mars[/b]        0.010°  (36")
+  [b]Jupiter[/b]     0.007°  (25")
+  [b]Saturn[/b]      0.009°  (32")
+  [b]Uranus[/b]      0.013°  (47")
+  [b]Neptune[/b]     0.017°  (61")
+  [b]Moon[/b]        0.062°  (3.7')
+  [b]Pluto[/b]       0.059°  (3.5')
+
+All bodies under 0.1° RMS — more than sufficient for aspect calculations, ingress timing, and planetary line work. The Sun is accurate to 14 arcseconds using a truncated series that fits entirely inside Pine Script's token limits.
+
+
+█ [b]WHAT'S NEW (V2)[/b]
+
+The original ephemeris required 11 chained library imports. A full validation audit uncovered critical coefficient errors and motivated this rewrite:
+
+• [b]L1[0] Precession Fix[/b] — All 8 VSOP87 planets had incorrect longitude rate coefficients (VSOP87B values instead of VSOP87D). Each was missing +0.24382 rad/millennium of general precession. This single correction reduced error from ~0.75° to < 0.1° across the board.
+
+• [b]28% Smaller[/b] — 4,300 lines across 11 files → ~3,100 lines in 1 file.
+
+• [b]Single Import[/b] — No dependency chain. Faster execution.
+
+• [b]Moon Improvements[/b] — Functions accept raw `time` directly. Node functions renamed with explicit north/south designation.
+
+
+█ [b]THEORIES[/b]
+
+[b]VSOP87D[/b] (Bretagnon & Francou, 1988) — Mercury through Neptune
+  511 truncated terms out of 31,577 total (1.6%). Heliocentric spherical
+  coordinates in the ecliptic of date.
+
+[b]ELP2000-82[/b] (Chapront-Touzé & Chapront, 1983) — Moon
+  91 terms (48 longitude + 43 latitude) from Meeus Chapter 47.
+
+[b]Meeus Series[/b] (Meeus, 1998) — Pluto
+  Analytical series from "Astronomical Algorithms" Ch. 37.
+  Valid ±1 century from J2000.
+
+
+█ [b]HOW TO USE[/b]
+
+Import the library:
+[pine]
+import BlueprintResearch/blueprint_ephemeris_lib/1 as eph
+[/pine]
+
+[b]Basic — plot a planet's geocentric longitude and declination:[/b]
+[pine]
+float jupiter_lon = eph.get_longitude(eph.Planet.Jupiter, time, true)
+float jupiter_decl = eph.get_declination(eph.Planet.Jupiter, time)
+
+plot(jupiter_lon, "Jupiter Geo Lon", color.yellow)
+plot(jupiter_decl, "Jupiter Decl", color.red)
+[/pine]
+
+[b]Retrograde detection:[/b]
+[pine]
+bool mercury_retro = eph.is_retrograde(eph.Planet.Mercury, time)
+bgcolor(mercury_retro ? color.new(color.red, 90) : na)
+[/pine]
+
+[b]Moon nodes and declination:[/b]
+[pine]
+float north_node = eph.get_mean_north_node_lon(time)
+float south_node = eph.get_mean_south_node_lon(time)
+float moon_decl = eph.get_declination(time)
+
+plot(north_node, "North Node", color.green)
+plot(south_node, "South Node", color.purple)
+plot(moon_decl, "Moon Declination", color.orange)
+[/pine]
+
+[b]Dynamic planet selection from input:[/b]
+[pine]
+string planet_str = input.string("Sun", "Planet", options=["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto"])
+eph.Planet p = eph.string_to_planet(planet_str)
+
+float geo = eph.get_longitude(p, time, true)
+float helio = eph.get_longitude(p, time, false)
+float speed = eph.get_speed(p, time)
+
+plot(geo, "Geocentric", color.yellow)
+plot(helio, "Heliocentric", color.blue)
+plot(speed * 100, "Speed x100", color.white)
+[/pine]
+
+All functions accept TradingView's `time` variable directly.
+
+
+█ [b]FUNCTIONS[/b]
+
+[b]Unified API[/b] (all planets):
+  `get_longitude(Planet, time, preferGeo)` — geo or heliocentric longitude
+  `get_declination(Planet, time)` — equatorial declination
+  `get_speed(Planet, time)` — longitude speed (°/day)
+  `is_retrograde(Planet, time)` — true when retrograde
+  `string_to_planet(string)` — name to enum
+
+[b]Averages[/b]:
+  `get_avg6_geo_lon` / `get_avg6_helio_lon` — Mercury–Saturn
+  `get_avg8_geo_lon` / `get_avg8_helio_lon` — Mercury–Neptune
+
+[b]Moon[/b] (direct access):
+  `get_geo_ecl_lon(time)` · `get_geo_ecl_lat(time)` · `get_declination(time)`
+  `get_mean_north_node_lon(time)` · `get_mean_south_node_lon(time)`
+  `get_true_north_node_lon(time)` · `get_true_south_node_lon(time)`
+  `get_north_node_declination(time)` · `get_south_node_declination(time)`
+
+
+█ [b]LIMITATIONS[/b]
+
+• Truncated series — sub-degree accuracy, not sub-arcsecond. More than sufficient for ingress timing and aspect work.
+• Validated against DE440 across 250 years (1850–2100). Over this full span, the worst-case VSOP87 planet (Uranus) is 0.017° RMS / 0.043° max error. Ingress dates manually verified back to the late 1800s with consistent accuracy.
+• Pluto uses Meeus series, limited to ±1 century from J2000.
+• Moon has no speed function.
+
+
+█ [b]ACKNOWLEDGMENTS[/b]
+
+Coefficient validation made possible by [b]Greg Miller's[/b] VSOP87 multi-language project, which provides the complete VSOP87D coefficient tables in accessible formats. His work converting the original Fortran data files into CSV/JSON for multiple languages was essential for identifying the L1[0] precession errors in the original libraries. Miller released this work into the public domain.
+[url=https://github.com/gmiller123456/vsop87-multilang]github.com/gmiller123456/vsop87-multilang[/url]
+
+[b]References[/b]:
+• Meeus, Jean. [i]Astronomical Algorithms[/i] (2nd Ed., 1998)
+• Bretagnon & Francou. [i]VSOP87 Solutions[/i] (Astronomy & Astrophysics, 1988)
+• Chapront-Touzé & Chapront. [i]ELP2000-82[/i] (1983)
+
+
+█ [b]OPEN SOURCE[/b]
+
+MIT License — part of the Blueprint Research open-source toolkit.
+[url=https://github.com/javonniicurry/Planetary_Ephemeris]Source code on GitHub[/url]

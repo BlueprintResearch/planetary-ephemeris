@@ -19,7 +19,7 @@
 // @license      MIT License - Free to use with attribution
 // @repository   https://github.com/javonniicurry/Planetary_Ephemeris
 //
-// @theory       VSOP87A (Heliocentric rectangular coordinates)
+// @theory       VSOP87D (Heliocentric spherical coordinates, ecliptic of date)
 // @accuracy     Truncated series (~10-15 terms per series) - arcsecond precision
 // @time_scale   Julian millennia from J2000.0 (use core.get_julian_millennia)
 //
@@ -205,7 +205,7 @@ export get_geo_speed(float t) =>
     array.push(L0_e, core.vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
 
     array<core.vsop_term> L1_e = array.new<core.vsop_term>()
-    array.push(L1_e, core.vsop_term.new(6283.07584999140, 0.0, 0.0))
+    array.push(L1_e, core.vsop_term.new(6283.31966747491, 0.0, 0.0))
     array.push(L1_e, core.vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
     array.push(L1_e, core.vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
     array.push(L1_e, core.vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))

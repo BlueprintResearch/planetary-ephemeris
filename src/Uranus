@@ -19,7 +19,7 @@
 // @license      MIT License - Free to use with attribution
 // @repository   https://github.com/javonniicurry/Planetary_Ephemeris
 //
-// @theory       VSOP87A (Heliocentric rectangular coordinates)
+// @theory       VSOP87D (Heliocentric spherical coordinates, ecliptic of date)
 // @accuracy     Truncated series (~10-15 terms per series) - arcsecond precision
 // @time_scale   Julian millennia from J2000.0 (use core.get_julian_millennia)
 //
@@ -65,7 +65,7 @@ export get_helio_lon(float t) =>
     array.push(L0, core.vsop_term.new(0.00026468869, 3.14152087888, 71.81265315070))
 
     array<core.vsop_term> L1 = array.new<core.vsop_term>()
-    array.push(L1, core.vsop_term.new(74.78159860910, 0.0, 0.0))
+    array.push(L1, core.vsop_term.new(75.02543121646, 0.0, 0.0))
     array.push(L1, core.vsop_term.new(0.00154332863, 5.24158770553, 74.78159856730))
     array.push(L1, core.vsop_term.new(0.00024456413, 1.71255705309, 1.48447270830))
     array.push(L1, core.vsop_term.new(0.00009257828, 0.42844639064, 11.04570026390))
@@ -138,7 +138,7 @@ export get_geo_speed(float t) =>
     array.push(L0_s, core.vsop_term.new(0.00365981718, 1.89962189068, 73.29712585900))
 
     array<core.vsop_term> L1_s = array.new<core.vsop_term>()
-    array.push(L1_s, core.vsop_term.new(74.78159860910, 0.0, 0.0))
+    array.push(L1_s, core.vsop_term.new(75.02543121646, 0.0, 0.0))
     array.push(L1_s, core.vsop_term.new(0.00154458244, 5.24201658072, 74.78159856730))
 
     array<core.vsop_term> L2_s = array.new<core.vsop_term>()
@@ -201,7 +201,7 @@ export get_geo_speed(float t) =>
     array.push(L0_e, core.vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
 
     array<core.vsop_term> L1_e = array.new<core.vsop_term>()
-    array.push(L1_e, core.vsop_term.new(6283.07584999140, 0.0, 0.0))
+    array.push(L1_e, core.vsop_term.new(6283.31966747491, 0.0, 0.0))
     array.push(L1_e, core.vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
     array.push(L1_e, core.vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
     array.push(L1_e, core.vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))

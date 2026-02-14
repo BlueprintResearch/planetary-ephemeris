@@ -1,0 +1,3139 @@
+//   ════════════════════════════════════════════════════════════
+//      BLUEPRINT RESEARCH • OPEN SOURCE PLANETARY EPHEMERIS
+//   ════════════════════════════════════════════════════════════
+//
+//                  ★       ★       ★
+//                      ╱   │   ╲
+//                     ─    ☉    ─
+//                      ╲   │   ╱
+//                  ★       ★       ★
+//
+//   ════════════════════════════════════════════════════════════
+//
+// @library      Blueprint Ephemeris Library
+// @description  Complete planetary ephemeris in a single library. Computes geocentric
+//               and heliocentric positions for all 10 solar system bodies: Sun, Moon,
+//               Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+//               Provides longitude, declination, speed, and lunar node positions.
+//
+// @author       BlueprintResearch (Javonnii)
+// @license      MIT License - Free to use with attribution
+// @repository   https://github.com/javonniicurry/Planetary_Ephemeris
+//
+// @theories     VSOP87D — Mercury through Neptune (Bretagnon & Francou, 1988)
+//               ELP2000-82 — Moon (Chapront-Touzé & Chapront, 1983; Meeus truncation)
+//               Meeus Series — Pluto (Meeus, "Astronomical Algorithms", 1998)
+//
+// @accuracy     All planets validated against JPL DE440 via Skyfield (2000-2050):
+//               Sun: 0.004° · Mercury-Neptune: 0.005-0.017° · Moon: 0.062° · Pluto: 0.059°
+//               All bodies < 0.1° RMS — no correction factors needed.
+//
+// @v2_changes   • Consolidated from 11 separate libraries into 1 (4,300 → ~3,100 lines, 28% reduction)
+//               • Fixed VSOP87D L1[0] precession coefficients for all 8 planets
+//                 (was using VSOP87B values — missing +0.24382 rad/millennium general precession)
+//               • Error reduced from ~0.75° to < 0.1° for all VSOP87 planets
+//               • Single import — no dependency chain, faster execution
+//               • Moon functions accept raw Unix time (no manual Julian century conversion)
+//               • Lunar node functions renamed for clarity (north/south explicit)
+//
+// @time_scale   All exported functions accept Unix timestamp in milliseconds
+//               (use TradingView's built-in 'time' variable directly)
+//               Internal: Julian millennia (VSOP87), Julian centuries (Moon/Pluto)
+//
+// @reference    Meeus, Jean. "Astronomical Algorithms" (2nd Ed., 1998)
+//               Bretagnon & Francou. "Planetary Theories in rectangular and spherical
+//               variables. VSOP87 Solutions" (Astronomy & Astrophysics, 1988)
+//               Chapront-Touzé & Chapront. "ELP2000-82" (1983)
+//               Miller, Greg. github.com/gmiller123456/vsop87-multilang (validation reference)
+//
+// @open_source  This library is part of an open-source alternative to
+//               proprietary astronomical libraries. Study, modify, and
+//               share freely. We believe knowledge of the cosmos belongs
+//               to everyone.
+//
+// ════════════════════════════════════════════════════════════════
+//   © 2026 BlueprintResearch / Javonnii
+//   Licensed under MIT License
+// ════════════════════════════════════════════════════════════════
+//
+
+
+//@version=6
+library("blueprint_ephemeris_lib")
+
+// Constants
+var float PI = 3.141592653589793
+var float RAD_TO_DEG = 180.0 / PI
+var float DEG_TO_RAD = PI / 180.0
+var float DAYS_PER_CENTURY = 36525.0
+
+// ════════════════════ CORE UTILITIES ════════════════════
+
+// need to pull these into other libs - for moon and pluto
+get_julian_millennia(float time_) =>
+    jd = time_ / 86400000.0 + 2440587.5
+    (jd - 2451545.0) / 365250.0
+
+
+// Use for the rest of the planets not moon or pluto 
+get_julian_centuries(float time_) =>
+    jd = time_ / 86400000.0 + 2440587.5
+    (jd - 2451545.0) / 36525.0
+
+
+// ─────────────────────── VSOP Term Type ───────────────────────
+// A single VSOP term: amplitude * cos(phase + frequency * t)
+type vsop_term
+    float amp     // amplitude of the cosine term
+    float phase   // phase offset in radians
+    float freq    // frequency multiplier of t
+
+
+// ─────────────────────── Evaluators ───────────────────────
+
+// /**
+//  * Evaluates a VSOP87 sum for a given array of vsop_terms
+//  * @param terms terms - Array of vsop_term
+//  * @param t - Julian centuries since J2000.0
+//  * @return float - evaluated VSOP sum (in radians or AU)
+//  */
+eval_vsop87(array<vsop_term> terms, float t) =>
+    sum = 0.0
+    for i = 0 to array.size(terms) - 1
+        t_i = array.get(terms, i)
+        sum += t_i.amp * math.cos(t_i.phase + t_i.freq * t)
+    sum
+
+// /**
+//  * Evaluates the time derivative of a VSOP87 sum (for velocity/speed)
+//  * @param terms - Array of vsop_term
+//  * @param t - Julian centuries since J2000.0
+//  * @return float - time derivative of the VSOP sum
+//  */
+eval_vsop87_derivative(array<vsop_term> terms, float t) =>
+    sum = 0.0
+    for i = 0 to array.size(terms) - 1
+        vsop_term term = array.get(terms, i)
+        sum += -term.amp * term.freq * math.sin(term.phase + term.freq * t)
+    sum
+
+
+// ─────────────────────── Angle Utilities ───────────────────────
+
+// /**
+//  * Wraps any angle to [0, 360) degrees
+//  * @param x - Angle in degrees
+//  * @return float - Normalized angle
+//  */
+mod360(float x) => x - 360.0 * math.floor(x / 360.0)
+
+// /**
+//  * Custom atan2 implementation to handle full 360° domain
+//  * @param y - y-coordinate
+//  * @param x - x-coordinate
+//  * @return float - angle in radians
+//  */
+custom_atan2(float y, float x) =>
+    x > 0.0 ? math.atan(y / x) :
+     x < 0.0 and y >= 0.0 ? math.atan(y / x) + PI :
+     x < 0.0 and y < 0.0 ? math.atan(y / x) - PI :
+     x == 0.0 and y > 0.0 ? PI / 2.0 :
+     x == 0.0 and y < 0.0 ? -PI / 2.0 :
+     0.0
+
+
+// ─────────────────────── Earth Functions ───────────────────────
+
+// /**
+//  * Computes Earth's heliocentric radius (AU)
+//  * Add more terms if planetary library fidelity is increased
+//  */
+get_earth_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+    // New R0 terms
+    array.push(R0, vsop_term.new(0.00001575572, 2.84685214877, 7860.41939243920))
+    array.push(R0, vsop_term.new(0.00000924799, 5.45292236722, 11506.76976979360))
+    array.push(R0, vsop_term.new(0.00000542439, 4.56409149777, 3930.20969621960))
+    array.push(R0, vsop_term.new(0.00000472110, 3.66100022149, 5884.92684658320))
+    array.push(R0, vsop_term.new(0.00000328780, 5.89983646482, 5223.69391980220))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+    // New R1 terms
+    array.push(R1, vsop_term.new(0.00000062523, 5.29856803136, 5884.92684658320))
+    array.push(R1, vsop_term.new(0.00000007560, 5.63306582165, 77713.77146812050))
+    array.push(R1, vsop_term.new(0.00000007711, 0.96836295859, 5507.55323866740))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00004392, 0.0, 0.0))
+    // New R2 term
+    array.push(R2, vsop_term.new(0.00000049523, 3.14159265359, 0.0))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// /**
+//  * Returns Earth’s heliocentric rectangular coordinates [x, y, z]
+//  * Used to compute geocentric positions for other planets
+//  * All values in AU
+//  */
+
+
+get_earth_helio_coords(float t) =>
+    
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+    // New L0 terms
+    array.push(L0, vsop_term.new(0.00000901855, 2.04505443513, 26.29831979980))
+    array.push(L0, vsop_term.new(0.00001199167, 1.10962946234, 1577.34354244780))
+    array.push(L0, vsop_term.new(0.00000857223, 3.50849156957, 398.14900340820))
+    array.push(L0, vsop_term.new(0.00000779786, 1.17882652114, 5223.69391980220))
+    array.push(L0, vsop_term.new(0.00000990250, 5.23268129594, 5884.92684658320))
+    array.push(L0, vsop_term.new(0.00000753141, 2.53339053818, 5507.55323866740))
+    array.push(L0, vsop_term.new(0.00000505264, 4.58292599973, 18849.22754997420))
+    array.push(L0, vsop_term.new(0.00000492379, 4.20506639861, 775.52261132400))
+    array.push(L0, vsop_term.new(0.00000356672, 2.91954116867, 0.06731030280))
+    array.push(L0, vsop_term.new(0.00000284125, 1.89869034186, 796.29800681640))
+
+    // L1
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+    // New L1 terms
+    array.push(L1, vsop_term.new(0.00000108977, 2.96618001993, 1577.34354244780))
+    array.push(L1, vsop_term.new(0.00000093478, 2.59212835365, 18849.22754997420))
+    array.push(L1, vsop_term.new(0.00000119261, 5.79557487799, 26.29831979980))
+    array.push(L1, vsop_term.new(0.00000072122, 1.13840581212, 529.69096509460))
+    array.push(L1, vsop_term.new(0.00000067768, 1.87472304791, 398.14900340820))
+    array.push(L1, vsop_term.new(0.00000067327, 4.40918235168, 5507.55323866740))
+
+    // L2
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+    // New L2 terms
+    array.push(L2, vsop_term.new(0.00000294833, 0.43717350256, 12566.15169998280))
+    array.push(L2, vsop_term.new(0.00000027338, 0.05295636147, 3.52311834900))
+
+    // Latitude (B) terms
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+    // New B0
+    array.push(B0, vsop_term.new(0.00000080445, 3.88013204458, 5223.69391980220))
+    array.push(B0, vsop_term.new(0.00000043806, 3.70444689758, 2352.86615377180))
+    array.push(B0, vsop_term.new(0.00000031933, 4.00026369781, 1577.34354244780))
+
+    array<vsop_term> B1 = array.new<vsop_term>()
+    array.push(B1, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+    // New B1
+    array.push(B1, vsop_term.new(0.00000006177, 1.73038850355, 5223.69391980220))
+
+
+    // Evaluate
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+
+    B0sum = eval_vsop87(B0, t)
+    B1sum = eval_vsop87(B1, t)
+    lat_rad = B0sum + B1sum * t
+
+    r = get_earth_helio_radius(t)
+    x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    z = r * math.sin(lat_rad)
+    [x, y, z]
+
+
+// Obliquity of the ecliptic (mean, in degrees)
+get_obliquity(float t) =>
+    float T = 10.0 * t  // Julian centuries
+    23.439281 - 0.0130042 * T - 0.00000016 * T * T + 0.000000504 * T * T * T
+
+
+// ─────────────────────── Earth Longitude Functions ───────────────────────
+
+// Earth's heliocentric ecliptic longitude (in degrees, mod 360)
+// This is the longitude of Earth from the Sun
+get_earth_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// ─────────────────────── Sun Functions ───────────────────────
+
+// Geocentric ecliptic longitude of the Sun (in degrees, mod 360)
+// This is Earth's heliocentric longitude + 180 degrees
+get_sun_geo_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG + 180.0)
+
+// Geocentric ecliptic longitude speed of the Sun (in degrees per day)
+get_sun_geo_speed(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+
+    dL0 = eval_vsop87_derivative(L0, t)
+    dL1 = eval_vsop87_derivative(L1, t)
+    dL2 = eval_vsop87_derivative(L2, t)
+
+    float dlon_rad_dt = dL0 + L1sum + t * dL1 + 2.0 * t * L2sum + t * t * dL2
+    (dlon_rad_dt * RAD_TO_DEG / 36525.0) / 10 // Convert to deg/day (since t in centuries, 36525 days/century)
+
+// Geocentric equatorial declination of the Sun (in degrees)
+get_sun_decl(float t) =>
+    float sun_ecl_lon_deg = get_sun_geo_lon(t)
+    float sun_ecl_lat_deg = 0.0  // Sun ecliptic latitude is approximately 0
+    float ecl_lon_rad = sun_ecl_lon_deg * (PI / 180.0)
+    float ecl_lat_rad = sun_ecl_lat_deg * (PI / 180.0)
+    float eps = get_obliquity(t)
+    float eps_rad = eps * (PI / 180.0)
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(eps_rad) + math.cos(ecl_lat_rad) * math.sin(eps_rad) * math.sin(ecl_lon_rad)
+    math.asin(sin_delta) * (180.0 / PI)
+
+// ─────────────────────── Future Projection Utilities ───────────────────────
+
+// @function Get bar interval in milliseconds for current timeframe
+// @returns (int) Time interval between bars in milliseconds
+get_bar_gap_ms() =>
+    int(timeframe.in_seconds(timeframe.period) * 1000)
+
+// @function Calculate future timestamp for projection plotting
+// @param current_time (int) Current bar time in milliseconds (use built-in 'time')
+// @param bars_ahead (int) Number of bars to project into future
+// @returns (int) Future timestamp suitable for xloc.bar_time and chart.point.from_time
+get_future_time(int current_time, int bars_ahead) =>
+    current_time + (get_bar_gap_ms() * bars_ahead)
+
+// @function Check if current bar is suitable for drawing future projections
+// @returns (bool) True on last bar when projections should be drawn
+is_projection_bar() =>
+    (barstate.islast or barstate.isrealtime) and not barstate.isconfirmed
+
+
+// ════════════════════ MERCURY (mer_*) ════════════════════
+
+
+// @function Computes Mercury's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+mer_get_helio_lon(float t) => 
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(4.40250710144, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.40989414977, 1.48302034195, 26087.90314157420))
+    array.push(L0, vsop_term.new(0.05046294199, 4.47785489540, 52175.80628314840))
+    array.push(L0, vsop_term.new(0.00855346844, 1.16520322459, 78263.70942472259))
+    array.push(L0, vsop_term.new(0.00585979278, 4.22090402969, 104351.61256629678))
+    array.push(L0, vsop_term.new(0.00165590362, 4.11969163181, 5661.33204915220))
+    array.push(L0, vsop_term.new(0.00034561897, 0.77930768443, 130439.51570787099))
+    array.push(L0, vsop_term.new(0.00007583476, 3.71348400510, 156527.41884944518))
+    array.push(L0, vsop_term.new(0.00003559745, 1.51202675145, 1109.37855209340))
+    array.push(L0, vsop_term.new(0.00001726011, 0.35832267096, 182615.32199101939))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(26088.14706222746, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.01126007832, 6.21703970996, 26087.90314157420))
+    array.push(L1, vsop_term.new(0.00303471395, 3.05565472363, 52175.80628314840))
+    array.push(L1, vsop_term.new(0.00121281763, 6.01064153797, 78263.70942472259))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00053049845, 0.0, 0.0))
+    array.push(L2, vsop_term.new(0.00016903658, 4.69072300649, 26087.90314157420))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Mercury's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.122, +0.122]. Note: Returns radians, not degrees.
+mer_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.11737528962, 1.98357498767, 26087.90314157420))
+    array.push(B0, vsop_term.new(0.02388076996, 5.03738959685, 52175.80628314840))
+    array.push(B0, vsop_term.new(0.01222839532, 3.14159265359, 0.0))
+    eval_vsop87(B0, t) // return radians directly
+
+
+// @function Computes Mercury's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 0.31-0.47 AU.
+mer_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(0.39528271652, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.07834131818, 6.19233722599, 26087.90314157420))
+    array.push(R0, vsop_term.new(0.00795525558, 2.95989690104, 52175.80628314840))
+    array.push(R0, vsop_term.new(0.00121281764, 6.01064153805, 78263.70942472259))
+    array.push(R0, vsop_term.new(0.00021921969, 2.77820093972, 104351.61256629678))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.00217347739, 4.65617158663, 26087.90314157420))
+    array.push(R1, vsop_term.new(0.00044141826, 1.42385543975, 52175.80628314840))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00003117867, 3.08231840296, 26087.90314157420))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Mercury's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+mer_get_geo_speed(float t) =>
+    // Mercury terms and sums
+    array<vsop_term> L0_m = array.new<vsop_term>()
+    array.push(L0_m, vsop_term.new(4.40250710144, 0.0, 0.0))
+    array.push(L0_m, vsop_term.new(0.40989414977, 1.48302034195, 26087.90314157420))
+    array.push(L0_m, vsop_term.new(0.05046294199, 4.47785489540, 52175.80628314840))
+    array.push(L0_m, vsop_term.new(0.00855346844, 1.16520322459, 78263.70942472259))
+    array.push(L0_m, vsop_term.new(0.00585979278, 4.22090402969, 104351.61256629678))
+    array.push(L0_m, vsop_term.new(0.00165590362, 4.11969163181, 5661.33204915220))
+    array.push(L0_m, vsop_term.new(0.00034561897, 0.77930768443, 130439.51570787099))
+    array.push(L0_m, vsop_term.new(0.00007583476, 3.71348400510, 156527.41884944518))
+    array.push(L0_m, vsop_term.new(0.00003559745, 1.51202675145, 1109.37855209340))
+    array.push(L0_m, vsop_term.new(0.00001726011, 0.35832267096, 182615.32199101939))
+
+    array<vsop_term> L1_m = array.new<vsop_term>()
+    array.push(L1_m, vsop_term.new(26088.14706222746, 0.0, 0.0))
+    array.push(L1_m, vsop_term.new(0.01126007832, 6.21703970996, 26087.90314157420))
+    array.push(L1_m, vsop_term.new(0.00303471395, 3.05565472363, 52175.80628314840))
+    array.push(L1_m, vsop_term.new(0.00121281763, 6.01064153797, 78263.70942472259))
+
+    array<vsop_term> L2_m = array.new<vsop_term>()
+    array.push(L2_m, vsop_term.new(0.00053049845, 0.0, 0.0))
+    array.push(L2_m, vsop_term.new(0.00016903658, 4.69072300649, 26087.90314157420))
+
+    float L0sum_m = eval_vsop87(L0_m, t)
+    float L1sum_m = eval_vsop87(L1_m, t)
+    float L2sum_m = eval_vsop87(L2_m, t)
+    float lon_rad_m = L0sum_m + L1sum_m * t + L2sum_m * t * t
+
+    float dL0_m = eval_vsop87_derivative(L0_m, t)
+    float dL1_m = eval_vsop87_derivative(L1_m, t)
+    float dL2_m = eval_vsop87_derivative(L2_m, t)
+    float dlon_dt_m = dL0_m + L1sum_m + t * dL1_m + 2.0 * t * L2sum_m + t * t * dL2_m
+
+    array<vsop_term> B0_m = array.new<vsop_term>()
+    array.push(B0_m, vsop_term.new(0.11737528962, 1.98357498767, 26087.90314157420))
+    array.push(B0_m, vsop_term.new(0.02388076996, 5.03738959685, 52175.80628314840))
+    array.push(B0_m, vsop_term.new(0.01222839532, 3.14159265359, 0.0))
+    float lat_rad_m = eval_vsop87(B0_m, t)
+    float dlat_dt_m = eval_vsop87_derivative(B0_m, t)
+
+    array<vsop_term> R0_m = array.new<vsop_term>()
+    array.push(R0_m, vsop_term.new(0.39528271652, 0.0, 0.0))
+    array.push(R0_m, vsop_term.new(0.07834131818, 6.19233722599, 26087.90314157420))
+    array.push(R0_m, vsop_term.new(0.00795525558, 2.95989690104, 52175.80628314840))
+    array.push(R0_m, vsop_term.new(0.00121281764, 6.01064153805, 78263.70942472259))
+    array.push(R0_m, vsop_term.new(0.00021921969, 2.77820093972, 104351.61256629678))
+
+    array<vsop_term> R1_m = array.new<vsop_term>()
+    array.push(R1_m, vsop_term.new(0.00217347739, 4.65617158663, 26087.90314157420))
+    array.push(R1_m, vsop_term.new(0.00044141826, 1.42385543975, 52175.80628314840))
+
+    array<vsop_term> R2_m = array.new<vsop_term>()
+    array.push(R2_m, vsop_term.new(0.00003117867, 3.08231840296, 26087.90314157420))
+
+    float R0sum_m = eval_vsop87(R0_m, t)
+    float R1sum_m = eval_vsop87(R1_m, t)
+    float R2sum_m = eval_vsop87(R2_m, t)
+    float r_m = R0sum_m + R1sum_m * t + R2sum_m * t * t
+
+    float dR0_m = eval_vsop87_derivative(R0_m, t)
+    float dR1_m = eval_vsop87_derivative(R1_m, t)
+    float dR2_m = eval_vsop87_derivative(R2_m, t)
+    float dr_dt_m = dR0_m + R1sum_m + t * dR1_m + 2.0 * t * R2sum_m + t * t * dR2_m
+
+    float cl_m = math.cos(lon_rad_m)
+    float sl_m = math.sin(lon_rad_m)
+    float cb_m = math.cos(lat_rad_m)
+    float sb_m = math.sin(lat_rad_m)
+
+    float x_m = r_m * cb_m * cl_m
+    float y_m = r_m * cb_m * sl_m
+
+    float vx_m = dr_dt_m * cb_m * cl_m - r_m * dlat_dt_m * sb_m * cl_m - r_m * cb_m * sl_m * dlon_dt_m
+    float vy_m = dr_dt_m * cb_m * sl_m - r_m * dlat_dt_m * sb_m * sl_m + r_m * cb_m * cl_m * dlon_dt_m
+
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    // Geocentric
+    float geo_x = x_m - x_e
+    float geo_y = y_m - y_e
+    float v_geo_x = vx_m - vx_e
+    float v_geo_y = vy_m - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Mercury's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+mer_get_geo_lon(float t) => // accurate might be able to improve by adding more terms to earth 
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+    mercury_lon_rad = mer_get_helio_lon(t) * PI / 180.0
+    mercury_b_rad = mer_get_helio_lat(t) * PI / 180.0
+    mercury_r = mer_get_helio_radius(t)
+    mercury_x = mercury_r * math.cos(mercury_b_rad) * math.cos(mercury_lon_rad)
+    mercury_y = mercury_r * math.cos(mercury_b_rad) * math.sin(mercury_lon_rad)
+    geo_x = mercury_x - earth_x
+    geo_y = mercury_y - earth_y
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Mercury's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-7, +7].
+mer_get_geo_ecl_lat(float t) =>
+    lon_rad = mer_get_helio_lon(t) * PI / 180.0
+    lat_rad = mer_get_helio_lat(t)  // already radians
+    r = mer_get_helio_radius(t)
+
+    mercury_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    mercury_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    mercury_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = mercury_x - earth_x
+    geo_y = mercury_y - earth_y
+    geo_z = mercury_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+// @function Computes Mercury's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+mer_get_geo_decl(float t) =>
+    float ecl_lon_deg = mer_get_geo_lon(t)
+    float ecl_lat_deg = mer_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ VENUS (ven_*) ════════════════════
+
+
+// @function Computes Venus's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+ven_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(3.17614666774, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.01353968419, 5.59313319619, 10213.28554621100))
+    array.push(L0, vsop_term.new(0.00089891645, 5.30650047764, 20426.57109242200))
+    array.push(L0, vsop_term.new(0.00005477194, 4.41630661466, 7860.41939243920))
+    array.push(L0, vsop_term.new(0.00003455741, 2.69964470778, 11790.62908865880))
+    array.push(L0, vsop_term.new(0.00002372061, 2.99377542079, 3930.20969621960))
+    array.push(L0, vsop_term.new(0.00001317108, 5.18668228402, 26.29831979980))
+    array.push(L0, vsop_term.new(0.00001200521, 6.15357116043, 30639.85663863300))
+    array.push(L0, vsop_term.new(0.00000761380, 1.95014702120, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00000707676, 1.06466707214, 775.52261132400))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(10213.52943052898, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00095617813, 2.46406511110, 10213.28554621100))
+    array.push(L1, vsop_term.new(0.00007787201, 0.62478482220, 20426.57109242200))
+    array.push(L1, vsop_term.new(0.00000951697, 1.31712790883, 26.29831979980))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00054127076, 0.0, 0.0))
+    array.push(L2, vsop_term.new(0.00003891460, 0.34514360047, 10213.28554621100))
+    array.push(L2, vsop_term.new(0.00000266136, 4.80307477493, 20426.57109242200))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Venus's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.1, +0.1]. Note: Returns radians, not degrees.
+ven_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.05923638472, 0.26702775813, 10213.28554621100))
+    array.push(B0, vsop_term.new(0.00040107978, 1.14737178112, 20426.57109242200))
+    array.push(B0, vsop_term.new(0.00032814918, 3.14159265359, 0.0))
+    eval_vsop87(B0, t) // returns radians
+
+
+// @function Computes Venus's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 0.72-0.73 AU.
+ven_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(0.72334820891, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.00489824185, 4.02151832268, 10213.28554621100))
+    array.push(R0, vsop_term.new(0.00001658058, 4.90206728031, 20426.57109242200))
+    array.push(R0, vsop_term.new(0.00001632093, 2.84548851892, 7860.41939243920))
+    array.push(R0, vsop_term.new(0.00001378048, 1.12846590600, 11790.62908865880))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.00034551039, 0.89198710598, 10213.28554621100))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00001406587, 5.06366395190, 10213.28554621100))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Venus's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+ven_get_geo_speed(float t) =>
+    // Venus terms and sums
+    array<vsop_term> L0_v = array.new<vsop_term>()
+    array.push(L0_v, vsop_term.new(3.17614669689, 0.0, 0.0))
+    array.push(L0_v, vsop_term.new(0.01353968419, 5.59313319619, 10213.28554621100))
+    array.push(L0_v, vsop_term.new(0.00089891645, 5.30650048468, 20426.57109242200))
+    array.push(L0_v, vsop_term.new(0.00005477201, 4.41630661466, 7860.41939243920))
+    array.push(L0_v, vsop_term.new(0.00003455741, 2.69964447820, 11790.62908865880))
+
+    array<vsop_term> L1_v = array.new<vsop_term>()
+    array.push(L1_v, vsop_term.new(10213.52943052898, 0.0, 0.0))
+    array.push(L1_v, vsop_term.new(0.00095707712, 2.46424448979, 10213.28554621100))
+
+    array<vsop_term> L2_v = array.new<vsop_term>()
+    array.push(L2_v, vsop_term.new(0.00054127076, 0.0, 0.0))
+
+    float L0sum_v = eval_vsop87(L0_v, t)
+    float L1sum_v = eval_vsop87(L1_v, t)
+    float L2sum_v = eval_vsop87(L2_v, t)
+    float lon_rad_v = L0sum_v + L1sum_v * t + L2sum_v * t * t
+
+    float dL0_v = eval_vsop87_derivative(L0_v, t)
+    float dL1_v = eval_vsop87_derivative(L1_v, t)
+    float dL2_v = eval_vsop87_derivative(L2_v, t)
+    float dlon_dt_v = dL0_v + L1sum_v + t * dL1_v + 2.0 * t * L2sum_v + t * t * dL2_v
+
+    array<vsop_term> B0_v = array.new<vsop_term>()
+    array.push(B0_v, vsop_term.new(0.05923638472, 0.26702775812, 10213.28554621100))
+    float lat_rad_v = eval_vsop87(B0_v, t)
+    float dlat_dt_v = eval_vsop87_derivative(B0_v, t)
+
+    array<vsop_term> R0_v = array.new<vsop_term>()
+    array.push(R0_v, vsop_term.new(0.72334820905, 0.0, 0.0))
+    array.push(R0_v, vsop_term.new(0.00489824182, 4.02151831717, 10213.28554621100))
+
+    array<vsop_term> R1_v = array.new<vsop_term>()
+    array.push(R1_v, vsop_term.new(0.00034551041, 0.89198710598, 10213.28554621100))
+
+    float R0sum_v = eval_vsop87(R0_v, t)
+    float R1sum_v = eval_vsop87(R1_v, t)
+    float r_v = R0sum_v + R1sum_v * t
+
+    float dR0_v = eval_vsop87_derivative(R0_v, t)
+    float dR1_v = eval_vsop87_derivative(R1_v, t)
+    float dr_dt_v = dR0_v + R1sum_v + t * dR1_v
+
+    float cl_v = math.cos(lon_rad_v)
+    float sl_v = math.sin(lon_rad_v)
+    float cb_v = math.cos(lat_rad_v)
+    float sb_v = math.sin(lat_rad_v)
+
+    float x_v = r_v * cb_v * cl_v
+    float y_v = r_v * cb_v * sl_v
+
+    float vx_v = dr_dt_v * cb_v * cl_v - r_v * dlat_dt_v * sb_v * cl_v - r_v * cb_v * sl_v * dlon_dt_v
+    float vy_v = dr_dt_v * cb_v * sl_v - r_v * dlat_dt_v * sb_v * sl_v + r_v * cb_v * cl_v * dlon_dt_v
+
+
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    // Geocentric
+    float geo_x = x_v - x_e
+    float geo_y = y_v - y_e
+    float v_geo_x = vx_v - vx_e
+    float v_geo_y = vy_v - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Venus's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+ven_get_geo_lon(float t) =>
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+    venus_lon_rad = ven_get_helio_lon(t) * PI / 180.0
+    venus_b_rad = ven_get_helio_lat(t) * PI / 180.0
+    venus_r = ven_get_helio_radius(t)
+    venus_x = venus_r * math.cos(venus_b_rad) * math.cos(venus_lon_rad)
+    venus_y = venus_r * math.cos(venus_b_rad) * math.sin(venus_lon_rad)
+    geo_x = venus_x - earth_x
+    geo_y = venus_y - earth_y
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Venus's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-9, +9].
+ven_get_geo_ecl_lat(float t) =>
+    lon_rad = ven_get_helio_lon(t) * PI / 180.0
+    lat_rad = ven_get_helio_lat(t)  // already radians
+    r = ven_get_helio_radius(t)
+
+    venus_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    venus_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    venus_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = venus_x - earth_x
+    geo_y = venus_y - earth_y
+    geo_z = venus_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Venus's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+ven_get_geo_decl(float t) =>
+    float ecl_lon_deg = ven_get_geo_lon(t)
+    float ecl_lat_deg = ven_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ MARS (mar_*) ════════════════════
+
+
+// @function Computes Mars's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+mar_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(6.20347711581, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.18656368093, 5.05037100303, 3340.61242669980))
+    array.push(L0, vsop_term.new(0.01108216792, 5.40099836958, 6681.22485339960))
+    array.push(L0, vsop_term.new(0.00091798394, 5.75478744667, 10021.83728009940))
+    array.push(L0, vsop_term.new(0.00027744987, 5.97049512942, 3.52311834900))
+    array.push(L0, vsop_term.new(0.00010610235, 2.93958560338, 2281.23049651060))
+    array.push(L0, vsop_term.new(0.00012315897, 0.84956081238, 2810.92146160520))
+    array.push(L0, vsop_term.new(0.00008926772, 4.15697846427, 0.01725365220))
+    array.push(L0, vsop_term.new(0.00008715691, 6.11005159792, 13362.44970679920))
+    array.push(L0, vsop_term.new(0.00006797556, 0.36462243626, 398.14900340820))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(3340.85627474342, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.01458227051, 3.60426053609, 3340.61242669980))
+    array.push(L1, vsop_term.new(0.00164901343, 3.92631250962, 6681.22485339960))
+    array.push(L1, vsop_term.new(0.00019963338, 4.26594061030, 10021.83728009940))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00058015791, 2.04979463279, 3340.61242669980))
+    array.push(L2, vsop_term.new(0.00054187645, 0.0, 0.0))
+    array.push(L2, vsop_term.new(0.00013908426, 2.45742359888, 6681.22485339960))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Mars's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.056, +0.056]. Note: Returns radians, not degrees.
+mar_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.03197134986, 3.76832042432, 3340.61242669980))
+    array.push(B0, vsop_term.new(0.00298033234, 4.10616996243, 6681.22485339960))
+    array.push(B0, vsop_term.new(0.00289104742, 0.0, 0.0))
+    eval_vsop87(B0, t)  // returns radians
+
+
+// @function Computes Mars's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 1.38-1.67 AU.
+mar_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(1.53033488271, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.14184953160, 3.47971283519, 3340.61242669980))
+    array.push(R0, vsop_term.new(0.00660776357, 3.81783442097, 6681.22485339960))
+    array.push(R0, vsop_term.new(0.00046179117, 4.15595316284, 10021.83728009940))
+    array.push(R0, vsop_term.new(0.00008109738, 5.55958460165, 2810.92146160520))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.01107433345, 2.03250524950, 3340.61242669980))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00044242249, 0.47930603943, 3340.61242669980))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Mars's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+mar_get_geo_speed(float t) =>
+    // Mars terms and sums
+    array<vsop_term> L0_m = array.new<vsop_term>()
+    array.push(L0_m, vsop_term.new(6.20347711583, 0.0, 0.0))
+    array.push(L0_m, vsop_term.new(0.18656368100, 5.05037100303, 3340.61242669980))
+    array.push(L0_m, vsop_term.new(0.01108216792, 5.40099836344, 6681.22485339960))
+    array.push(L0_m, vsop_term.new(0.00091798394, 5.75478745111, 10021.83728009940))
+    array.push(L0_m, vsop_term.new(0.00027744987, 5.97049512942, 3.52311834900))
+
+    array<vsop_term> L1_m = array.new<vsop_term>()
+    array.push(L1_m, vsop_term.new(3340.85627474342, 0.0, 0.0))
+    array.push(L1_m, vsop_term.new(0.01458227051, 3.60426053609, 3340.61242669980))
+
+    array<vsop_term> L2_m = array.new<vsop_term>()
+    array.push(L2_m, vsop_term.new(0.00058015791, 2.04979463279, 3340.61242669980))
+
+    float L0sum_m = eval_vsop87(L0_m, t)
+    float L1sum_m = eval_vsop87(L1_m, t)
+    float L2sum_m = eval_vsop87(L2_m, t)
+    float lon_rad_m = L0sum_m + L1sum_m * t + L2sum_m * t * t
+
+    float dL0_m = eval_vsop87_derivative(L0_m, t)
+    float dL1_m = eval_vsop87_derivative(L1_m, t)
+    float dL2_m = eval_vsop87_derivative(L2_m, t)
+    float dlon_dt_m = dL0_m + L1sum_m + t * dL1_m + 2.0 * t * L2sum_m + t * t * dL2_m
+
+    array<vsop_term> B0_m = array.new<vsop_term>()
+    array.push(B0_m, vsop_term.new(0.03197134986, 3.76832042432, 3340.61242669980))
+    array.push(B0_m, vsop_term.new(0.00298033234, 4.10616996305, 6681.22485339960))
+    array.push(B0_m, vsop_term.new(0.00289104742, 0.0, 0.0))
+
+    float lat_rad_m = eval_vsop87(B0_m, t)
+    float dlat_dt_m = eval_vsop87_derivative(B0_m, t)
+
+    array<vsop_term> R0_m = array.new<vsop_term>()
+    array.push(R0_m, vsop_term.new(1.53033488271, 0.0, 0.0))
+    array.push(R0_m, vsop_term.new(0.14184953160, 3.47971283519, 3340.61242669980))
+    array.push(R0_m, vsop_term.new(0.00660776357, 3.81783442097, 6681.22485339960))
+    array.push(R0_m, vsop_term.new(0.00046179117, 4.15595316284, 10021.83728009940))
+    array.push(R0_m, vsop_term.new(0.00008109738, 5.55958460165, 2810.92146160520))
+
+    array<vsop_term> R1_m = array.new<vsop_term>()
+    array.push(R1_m, vsop_term.new(0.01107433345, 2.03250524950, 3340.61242669980))
+
+    array<vsop_term> R2_m = array.new<vsop_term>()
+    array.push(R2_m, vsop_term.new(0.00044242249, 0.47930603943, 3340.61242669980))
+
+    float R0sum_m = eval_vsop87(R0_m, t)
+    float R1sum_m = eval_vsop87(R1_m, t)
+    float R2sum_m = eval_vsop87(R2_m, t)
+    float r_m = R0sum_m + R1sum_m * t + R2sum_m * t * t
+
+    float dR0_m = eval_vsop87_derivative(R0_m, t)
+    float dR1_m = eval_vsop87_derivative(R1_m, t)
+    float dR2_m = eval_vsop87_derivative(R2_m, t)
+    float dr_dt_m = dR0_m + R1sum_m + t * dR1_m + 2.0 * t * R2sum_m + t * t * dR2_m
+
+    float cl_m = math.cos(lon_rad_m)
+    float sl_m = math.sin(lon_rad_m)
+    float cb_m = math.cos(lat_rad_m)
+    float sb_m = math.sin(lat_rad_m)
+
+    float x_m = r_m * cb_m * cl_m
+    float y_m = r_m * cb_m * sl_m
+
+    float vx_m = dr_dt_m * cb_m * cl_m - r_m * dlat_dt_m * sb_m * cl_m - r_m * cb_m * sl_m * dlon_dt_m
+    float vy_m = dr_dt_m * cb_m * sl_m - r_m * dlat_dt_m * sb_m * sl_m + r_m * cb_m * cl_m * dlon_dt_m
+
+
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    // Geocentric
+    float geo_x = x_m - x_e
+    float geo_y = y_m - y_e
+    float v_geo_x = vx_m - vx_e
+    float v_geo_y = vy_m - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Mars's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+mar_get_geo_lon(float t) =>
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+    mars_lon_rad = mar_get_helio_lon(t) * PI / 180.0
+    mars_b_rad = mar_get_helio_lat(t) * PI / 180.0
+    mars_r = mar_get_helio_radius(t)
+    mars_x = mars_r * math.cos(mars_b_rad) * math.cos(mars_lon_rad)
+    mars_y = mars_r * math.cos(mars_b_rad) * math.sin(mars_lon_rad)
+    geo_x = mars_x - earth_x
+    geo_y = mars_y - earth_y
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Mars's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-7, +7].
+mar_get_geo_ecl_lat(float t) =>
+    lon_rad = mar_get_helio_lon(t) * PI / 180.0
+    lat_rad = mar_get_helio_lat(t)  // already radians
+    r = mar_get_helio_radius(t)
+
+    mars_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    mars_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    mars_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = mars_x - earth_x
+    geo_y = mars_y - earth_y
+    geo_z = mars_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Mars's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+mar_get_geo_decl(float t) =>
+    float ecl_lon_deg = mar_get_geo_lon(t)
+    float ecl_lat_deg = mar_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ JUPITER (jup_*) ════════════════════
+
+
+// @function Computes Jupiter's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+jup_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(0.59954691494, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.09695898711, 5.06191793105, 529.69096509460))
+    array.push(L0, vsop_term.new(0.00573610142, 1.44406205629, 7.11354700080))
+    array.push(L0, vsop_term.new(0.00306389180, 5.41734729976, 1059.38193018920))
+    array.push(L0, vsop_term.new(0.00097178296, 4.14264726552, 632.78373931320))
+    array.push(L0, vsop_term.new(0.00072903096, 3.64042909255, 522.57741809380))
+    array.push(L0, vsop_term.new(0.00064263975, 3.41145165351, 103.09277421860))
+    array.push(L0, vsop_term.new(0.00039806064, 2.29376740788, 419.48464387520))
+    array.push(L0, vsop_term.new(0.00038857767, 1.27231755835, 316.39186965660))
+    array.push(L0, vsop_term.new(0.00027964622, 1.78454591820, 536.80451209540))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(529.93480757497, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00489741194, 4.22066689928, 529.69096509460))
+    array.push(L1, vsop_term.new(0.00228918538, 6.02647464016, 7.11354700080))
+    array.push(L1, vsop_term.new(0.00027655380, 4.57265956824, 1059.38193018920))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00047233601, 4.32148536482, 7.11354700080))
+    array.push(L2, vsop_term.new(0.00014837133, 3.14159265359, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Jupiter's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.035, +0.035]. Note: Returns radians, not degrees.
+jup_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.02268615702, 3.55852606721, 529.69096509460))
+    array.push(B0, vsop_term.new(0.00109971634, 3.90809347197, 1059.38193018920))
+    array.push(B0, vsop_term.new(0.00110090358, 0.0, 0.0))
+    eval_vsop87(B0, t)  // returns radians directly
+
+
+// @function Computes Jupiter's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 4.95-5.46 AU.
+jup_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(5.20887429471, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.25209327020, 3.49108640015, 529.69096509460))
+    array.push(R0, vsop_term.new(0.00610599976, 3.84115365602, 1059.38193018920))
+    array.push(R0, vsop_term.new(0.00282029465, 2.57419879933, 632.78373931320))
+    array.push(R0, vsop_term.new(0.00187647346, 2.07590380082, 522.57741809380))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.01271801596, 2.64937511122, 529.69096509460))
+    array.push(R1, vsop_term.new(0.00061661771, 3.00076251018, 1059.38193018920))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00079644833, 1.35865896596, 529.69096509460))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Jupiter's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+jup_get_geo_speed(float t) =>
+    // Jupiter terms and sums
+    array<vsop_term> L0_j = array.new<vsop_term>()
+    array.push(L0_j, vsop_term.new(0.59954691494, 0.0, 0.0))
+    array.push(L0_j, vsop_term.new(0.09695898719, 5.06191793158, 529.69096509460))
+    array.push(L0_j, vsop_term.new(0.00573610145, 1.44406205976, 7.11354700080))
+    array.push(L0_j, vsop_term.new(0.00306389180, 5.41734729976, 1059.38193018920))
+    array.push(L0_j, vsop_term.new(0.00097178296, 4.14264726552, 632.78373931320))
+    array.push(L0_j, vsop_term.new(0.00072903096, 3.64042916389, 522.57741809380))
+
+    array<vsop_term> L1_j = array.new<vsop_term>()
+    array.push(L1_j, vsop_term.new(529.69096508814, 0.0, 0.0))
+    array.push(L1_j, vsop_term.new(0.00489503243, 4.22082939470, 529.69096509460))
+
+    array<vsop_term> L2_j = array.new<vsop_term>()
+    array.push(L2_j, vsop_term.new(0.00047233601, 4.32148536482, 7.11354700080))
+
+    float L0sum_j = eval_vsop87(L0_j, t)
+    float L1sum_j = eval_vsop87(L1_j, t)
+    float L2sum_j = eval_vsop87(L2_j, t)
+    float lon_rad_j = L0sum_j + L1sum_j * t + L2sum_j * t * t
+
+    float dL0_j = eval_vsop87_derivative(L0_j, t)
+    float dL1_j = eval_vsop87_derivative(L1_j, t)
+    float dL2_j = eval_vsop87_derivative(L2_j, t)
+    float dlon_dt_j = dL0_j + L1sum_j + t * dL1_j + 2.0 * t * L2sum_j + t * t * dL2_j
+
+    array<vsop_term> B0_j = array.new<vsop_term>()
+    array.push(B0_j, vsop_term.new(0.02268615702, 3.55852606718, 529.69096509460))
+    float lat_rad_j = eval_vsop87(B0_j, t)
+    float dlat_dt_j = eval_vsop87_derivative(B0_j, t)
+
+    array<vsop_term> R0_j = array.new<vsop_term>()
+    array.push(R0_j, vsop_term.new(5.20887429471, 0.0, 0.0))
+    array.push(R0_j, vsop_term.new(0.25209327119, 3.49108640015, 529.69096509460))
+
+    array<vsop_term> R1_j = array.new<vsop_term>()
+    array.push(R1_j, vsop_term.new(0.01271801520, 2.64937512894, 529.69096509460))
+
+    float R0sum_j = eval_vsop87(R0_j, t)
+    float R1sum_j = eval_vsop87(R1_j, t)
+    float r_j = R0sum_j + R1sum_j * t
+
+    float dR0_j = eval_vsop87_derivative(R0_j, t)
+    float dR1_j = eval_vsop87_derivative(R1_j, t)
+    float dr_dt_j = dR0_j + R1sum_j + t * dR1_j
+
+    float cl_j = math.cos(lon_rad_j)
+    float sl_j = math.sin(lon_rad_j)
+    float cb_j = math.cos(lat_rad_j)
+    float sb_j = math.sin(lat_rad_j)
+
+    float x_j = r_j * cb_j * cl_j
+    float y_j = r_j * cb_j * sl_j
+
+    float vx_j = dr_dt_j * cb_j * cl_j - r_j * dlat_dt_j * sb_j * cl_j - r_j * cb_j * sl_j * dlon_dt_j
+    float vy_j = dr_dt_j * cb_j * sl_j - r_j * dlat_dt_j * sb_j * sl_j + r_j * cb_j * cl_j * dlon_dt_j
+
+    // Earth remains unchanged
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+
+    float geo_x = x_j - x_e
+    float geo_y = y_j - y_e
+    float v_geo_x = vx_j - vx_e
+    float v_geo_y = vy_j - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Jupiter's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+jup_get_geo_lon(float t) => // accurate might be able to improve by adding more terms to earth
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    jupiter_lon_rad = jup_get_helio_lon(t) * PI / 180.0
+    jupiter_b_rad   = jup_get_helio_lat(t) * PI / 180.0
+    jupiter_r       = jup_get_helio_radius(t)
+
+    jupiter_x = jupiter_r * math.cos(jupiter_b_rad) * math.cos(jupiter_lon_rad)
+    jupiter_y = jupiter_r * math.cos(jupiter_b_rad) * math.sin(jupiter_lon_rad)
+
+    geo_x = jupiter_x - earth_x
+    geo_y = jupiter_y - earth_y
+
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Jupiter's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-2, +2].
+jup_get_geo_ecl_lat(float t) =>
+    lon_rad = jup_get_helio_lon(t) * PI / 180.0
+    lat_rad = jup_get_helio_lat(t)  // already radians
+    r = jup_get_helio_radius(t)
+
+    jupiter_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    jupiter_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    jupiter_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = jupiter_x - earth_x
+    geo_y = jupiter_y - earth_y
+    geo_z = jupiter_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Jupiter's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+jup_get_geo_decl(float t) =>
+    float ecl_lon_deg = jup_get_geo_lon(t)
+    float ecl_lat_deg = jup_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ SATURN (sat_*) ════════════════════
+
+
+// @function Computes Saturn's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+sat_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(0.87401354029, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.11107659780, 3.96205090159, 213.29909543800))
+    array.push(L0, vsop_term.new(0.01414150957, 4.58581515873, 7.11354700080))
+    array.push(L0, vsop_term.new(0.00398379386, 0.52112025957, 206.18554843720))
+    array.push(L0, vsop_term.new(0.00350769223, 3.30329907896, 426.59819087600))
+    array.push(L0, vsop_term.new(0.00206816296, 0.24658366938, 103.09277421860))
+    array.push(L0, vsop_term.new(0.00079271288, 3.84007078530, 220.41264243880))
+    array.push(L0, vsop_term.new(0.00023990355, 4.66976924553, 110.20632121940))
+    array.push(L0, vsop_term.new(0.00016573588, 0.43719228296, 419.48464387520))
+    array.push(L0, vsop_term.new(0.00014906995, 5.76903183869, 316.39186965660))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(213.54295595986, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.01296855005, 1.82820544701, 213.29909543800))
+    array.push(L1, vsop_term.new(0.00564347566, 2.88500136429, 7.11354700080))
+    array.push(L1, vsop_term.new(0.00098323030, 1.08070061328, 426.59819087600))
+    array.push(L1, vsop_term.new(0.00107678770, 2.27769911872, 206.18554843720))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00116441181, 1.17987850633, 7.11354700080))
+    array.push(L2, vsop_term.new(0.00091920844, 0.07425261094, 213.29909543800))
+    array.push(L2, vsop_term.new(0.00090592251, 0.0, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Saturn's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.05, +0.05]. Note: Returns radians, not degrees.
+sat_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.04330678040, 3.60284428399, 213.29909543800))
+    array.push(B0, vsop_term.new(0.00240348303, 2.85238489390, 426.59819087600))
+    array.push(B0, vsop_term.new(0.00084745939, 0.0, 0.0))
+    array.push(B0, vsop_term.new(0.00030863357, 3.48441504465, 220.41264243880))
+    array.push(B0, vsop_term.new(0.00034116063, 0.57297307844, 206.18554843720))
+    eval_vsop87(B0, t)  // returns radians directly
+
+
+// @function Computes Saturn's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 9.02-10.05 AU.
+sat_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(9.55758135486, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.52921382865, 2.39226219733, 213.29909543800))
+    array.push(R0, vsop_term.new(0.01873679934, 5.23549604660, 206.18554843720))
+    array.push(R0, vsop_term.new(0.01464663959, 1.64763045468, 426.59819087600))
+    array.push(R0, vsop_term.new(0.00821891141, 5.93520025371, 316.39186965660))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.06182981282, 0.25843511480, 213.29909543800))
+    array.push(R1, vsop_term.new(0.00506577242, 0.71114650941, 206.18554843720))
+    array.push(R1, vsop_term.new(0.00341394029, 5.79635741658, 426.59819087600))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00436902572, 4.78671673044, 213.29909543800))
+    array.push(R2, vsop_term.new(0.00071922498, 2.50070069930, 206.18554843720))
+    array.push(R2, vsop_term.new(0.00049766792, 4.97168150870, 220.41264243880))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Saturn's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+sat_get_geo_speed(float t) =>
+    // Saturn terms and sums
+    array<vsop_term> L0_s = array.new<vsop_term>()
+    array.push(L0_s, vsop_term.new(0.87401354029, 0.0, 0.0))
+    array.push(L0_s, vsop_term.new(0.11107659762, 3.96205090159, 213.29909543800))
+    array.push(L0_s, vsop_term.new(0.01414150957, 4.58581516874, 7.11354700080))
+    array.push(L0_s, vsop_term.new(0.00398379386, 0.52112025957, 206.18554843720))
+    array.push(L0_s, vsop_term.new(0.00350769223, 3.30329903015, 426.59819087600))
+    array.push(L0_s, vsop_term.new(0.00206816305, 0.24658372002, 103.09277421860))
+
+    array<vsop_term> L1_s = array.new<vsop_term>()
+    array.push(L1_s, vsop_term.new(213.54295595986, 0.0, 0.0))
+    array.push(L1_s, vsop_term.new(0.01296855005, 1.82820544701, 213.29909543800))
+    array.push(L1_s, vsop_term.new(0.00564347566, 2.88500136429, 7.11354700080))
+
+    array<vsop_term> L2_s = array.new<vsop_term>()
+    array.push(L2_s, vsop_term.new(0.00116441330, 1.17988132879, 7.11354700080))
+    array.push(L2_s, vsop_term.new(0.00091920844, 0.07425261094, 213.29909543800))
+
+    float L0sum_s = eval_vsop87(L0_s, t)
+    float L1sum_s = eval_vsop87(L1_s, t)
+    float L2sum_s = eval_vsop87(L2_s, t)
+    float lon_rad_s = L0sum_s + L1sum_s * t + L2sum_s * t * t
+
+    float dL0_s = eval_vsop87_derivative(L0_s, t)
+    float dL1_s = eval_vsop87_derivative(L1_s, t)
+    float dL2_s = eval_vsop87_derivative(L2_s, t)
+    float dlon_dt_s = dL0_s + L1sum_s + t * dL1_s + 2.0 * t * L2sum_s + t * t * dL2_s
+
+    array<vsop_term> B0_s = array.new<vsop_term>()
+    array.push(B0_s, vsop_term.new(0.04330678040, 3.60284428399, 213.29909543800))
+    array.push(B0_s, vsop_term.new(0.00240348303, 2.85238489390, 426.59819087600))
+    array.push(B0_s, vsop_term.new(0.00084745939, 0.0, 0.0))
+    float lat_rad_s = eval_vsop87(B0_s, t)
+    float dlat_dt_s = eval_vsop87_derivative(B0_s, t)
+
+    array<vsop_term> R0_s = array.new<vsop_term>()
+    array.push(R0_s, vsop_term.new(9.55758135486, 0.0, 0.0))
+    array.push(R0_s, vsop_term.new(0.52921382865, 2.39226219733, 213.29909543800))
+    array.push(R0_s, vsop_term.new(0.01873679934, 5.23549604660, 206.18554843720))
+    array.push(R0_s, vsop_term.new(0.01464663959, 1.64763045468, 426.59819087600))
+
+    array<vsop_term> R1_s = array.new<vsop_term>()
+    array.push(R1_s, vsop_term.new(0.06182981282, 0.25843511480, 213.29909543800))
+    array.push(R1_s, vsop_term.new(0.00506577242, 0.71114650941, 206.18554843720))
+
+    float R0sum_s = eval_vsop87(R0_s, t)
+    float R1sum_s = eval_vsop87(R1_s, t)
+    float r_s = R0sum_s + R1sum_s * t
+
+    float dR0_s = eval_vsop87_derivative(R0_s, t)
+    float dR1_s = eval_vsop87_derivative(R1_s, t)
+    float dr_dt_s = dR0_s + R1sum_s + t * dR1_s
+
+    float cl_s = math.cos(lon_rad_s)
+    float sl_s = math.sin(lon_rad_s)
+    float cb_s = math.cos(lat_rad_s)
+    float sb_s = math.sin(lat_rad_s)
+
+    float x_s = r_s * cb_s * cl_s
+    float y_s = r_s * cb_s * sl_s
+
+    float vx_s = dr_dt_s * cb_s * cl_s - r_s * dlat_dt_s * sb_s * cl_s - r_s * cb_s * sl_s * dlon_dt_s
+    float vy_s = dr_dt_s * cb_s * sl_s - r_s * dlat_dt_s * sb_s * sl_s + r_s * cb_s * cl_s * dlon_dt_s
+
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    float geo_x = x_s - x_e
+    float geo_y = y_s - y_e
+    float v_geo_x = vx_s - vx_e
+    float v_geo_y = vy_s - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Saturn's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+sat_get_geo_lon(float t) =>
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    saturn_lon_rad = sat_get_helio_lon(t) * PI / 180.0
+    saturn_b_rad   = sat_get_helio_lat(t)  // already in radians
+    saturn_r       = sat_get_helio_radius(t)
+
+    saturn_x = saturn_r * math.cos(saturn_b_rad) * math.cos(saturn_lon_rad)
+    saturn_y = saturn_r * math.cos(saturn_b_rad) * math.sin(saturn_lon_rad)
+
+    geo_x = saturn_x - earth_x
+    geo_y = saturn_y - earth_y
+
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Saturn's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-3, +3].
+sat_get_geo_ecl_lat(float t) =>
+    lon_rad = sat_get_helio_lon(t) * PI / 180.0
+    lat_rad = sat_get_helio_lat(t)  // already radians
+    r = sat_get_helio_radius(t)
+
+    saturn_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    saturn_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    saturn_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = saturn_x - earth_x
+    geo_y = saturn_y - earth_y
+    geo_z = saturn_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Saturn's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+sat_get_geo_decl(float t) =>
+    float ecl_lon_deg = sat_get_geo_lon(t)
+    float ecl_lat_deg = sat_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ URANUS (ura_*) ════════════════════
+
+
+// @function Computes Uranus's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+ura_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(5.48129294297, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.09260408234, 0.89106421530, 74.78159856730))
+    array.push(L0, vsop_term.new(0.01504247826, 3.62719262195, 1.48447270830))
+    array.push(L0, vsop_term.new(0.00365981718, 1.89962189068, 73.29712585900))
+    array.push(L0, vsop_term.new(0.00272328132, 3.35823706307, 149.56319713460))
+    array.push(L0, vsop_term.new(0.00070328499, 5.39254450063, 63.73589830340))
+    array.push(L0, vsop_term.new(0.00068892678, 6.09292489045, 76.26607127560))
+    array.push(L0, vsop_term.new(0.00061998615, 2.26952040469, 2.96894541660))
+    array.push(L0, vsop_term.new(0.00061950719, 2.85098872691, 11.04570026390))
+    array.push(L0, vsop_term.new(0.00026468869, 3.14152087888, 71.81265315070))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(75.02543121646, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00154332863, 5.24158770553, 74.78159856730))
+    array.push(L1, vsop_term.new(0.00024456413, 1.71255705309, 1.48447270830))
+    array.push(L1, vsop_term.new(0.00009257828, 0.42844639064, 11.04570026390))
+    array.push(L1, vsop_term.new(0.00008265977, 1.50220035110, 63.73589830340))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00053033277, 0.0, 0.0))
+    array.push(L2, vsop_term.new(0.00002357636, 2.26014661705, 74.78159856730))
+    array.push(L2, vsop_term.new(0.00000769129, 4.52561041823, 11.04570026390))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Uranus's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.018, +0.018]. Note: Returns radians, not degrees.
+ura_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.01346277639, 2.61877810547, 74.78159856730))
+    array.push(B0, vsop_term.new(0.00062341405, 5.08111175856, 149.56319713460))
+    array.push(B0, vsop_term.new(0.00061601196, 3.14159265359, 0.0))
+    array.push(B0, vsop_term.new(0.00009963744, 1.61603876357, 76.26607127560))
+    array.push(B0, vsop_term.new(0.00009926160, 0.57630387917, 73.29712585900))
+    eval_vsop87(B0, t)  // returns radians directly
+
+
+// @function Computes Uranus's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 18.28-20.09 AU.
+ura_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(19.21264847881, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.88784984413, 5.60377527014, 74.78159856730))
+    array.push(R0, vsop_term.new(0.03440836062, 0.32836099706, 73.29712585900))
+    array.push(R0, vsop_term.new(0.02055653495, 1.78295170028, 149.56319713460))
+    array.push(R0, vsop_term.new(0.00649321851, 4.52247298119, 76.26607127560))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.01479896629, 3.67205697578, 74.78159856730))
+    array.push(R1, vsop_term.new(0.00071212085, 6.22601006675, 63.73589830340))
+    array.push(R1, vsop_term.new(0.00068627160, 6.13411179902, 149.56319713460))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00022439899, 0.69953354562, 74.78159856730))
+    array.push(R2, vsop_term.new(0.00004726838, 1.69896897296, 63.73589830340))
+    array.push(R2, vsop_term.new(0.00001681383, 4.64842242588, 70.84944530420))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Uranus's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+ura_get_geo_speed(float t) =>
+    // Uranus terms and sums
+    array<vsop_term> L0_s = array.new<vsop_term>()
+    array.push(L0_s, vsop_term.new(5.48129294299, 0.0, 0.0))
+    array.push(L0_s, vsop_term.new(0.09260408234, 0.89106421530, 74.78159856730))
+    array.push(L0_s, vsop_term.new(0.01504247826, 3.62719262195, 1.48447270830))
+    array.push(L0_s, vsop_term.new(0.00365981718, 1.89962189068, 73.29712585900))
+
+    array<vsop_term> L1_s = array.new<vsop_term>()
+    array.push(L1_s, vsop_term.new(75.02543121646, 0.0, 0.0))
+    array.push(L1_s, vsop_term.new(0.00154458244, 5.24201658072, 74.78159856730))
+
+    array<vsop_term> L2_s = array.new<vsop_term>()
+    array.push(L2_s, vsop_term.new(0.00053033277, 0.0, 0.0))
+
+    float L0sum_s = eval_vsop87(L0_s, t)
+    float L1sum_s = eval_vsop87(L1_s, t)
+    float L2sum_s = eval_vsop87(L2_s, t)
+    float lon_rad_s = L0sum_s + L1sum_s * t + L2sum_s * t * t
+
+    float dL0_s = eval_vsop87_derivative(L0_s, t)
+    float dL1_s = eval_vsop87_derivative(L1_s, t)
+    float dL2_s = eval_vsop87_derivative(L2_s, t)
+    float dlon_dt_s = dL0_s + L1sum_s + t * dL1_s + 2.0 * t * L2sum_s + t * t * dL2_s
+
+    array<vsop_term> B0_s = array.new<vsop_term>()
+    array.push(B0_s, vsop_term.new(0.01346277639, 2.61877810547, 74.78159856730))
+
+    float lat_rad_s = eval_vsop87(B0_s, t)
+    float dlat_dt_s = eval_vsop87_derivative(B0_s, t)
+
+    array<vsop_term> R0_s = array.new<vsop_term>()
+    array.push(R0_s, vsop_term.new(19.21264847881, 0.0, 0.0))
+    array.push(R0_s, vsop_term.new(0.88784984413, 5.60377526994, 74.78159856730))
+
+    array<vsop_term> R1_s = array.new<vsop_term>()
+    array.push(R1_s, vsop_term.new(0.01479896370, 3.67205705317, 74.78159856730))
+
+    float R0sum_s = eval_vsop87(R0_s, t)
+    float R1sum_s = eval_vsop87(R1_s, t)
+    float r_s = R0sum_s + R1sum_s * t
+
+    float dR0_s = eval_vsop87_derivative(R0_s, t)
+    float dR1_s = eval_vsop87_derivative(R1_s, t)
+    float dr_dt_s = dR0_s + R1sum_s + t * dR1_s
+
+    float cl_s = math.cos(lon_rad_s)
+    float sl_s = math.sin(lon_rad_s)
+    float cb_s = math.cos(lat_rad_s)
+    float sb_s = math.sin(lat_rad_s)
+
+    float x_s = r_s * cb_s * cl_s
+    float y_s = r_s * cb_s * sl_s
+
+    float vx_s = dr_dt_s * cb_s * cl_s - r_s * dlat_dt_s * sb_s * cl_s - r_s * cb_s * sl_s * dlon_dt_s
+    float vy_s = dr_dt_s * cb_s * sl_s - r_s * dlat_dt_s * sb_s * sl_s + r_s * cb_s * cl_s * dlon_dt_s
+
+    
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+
+    float geo_x = x_s - x_e
+    float geo_y = y_s - y_e
+    float v_geo_x = vx_s - vx_e
+    float v_geo_y = vy_s - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Uranus's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+ura_get_geo_lon(float t) =>
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    uranus_lon_rad = ura_get_helio_lon(t) * PI / 180.0
+    uranus_b_rad   = ura_get_helio_lat(t)  // already in radians
+    uranus_r       = ura_get_helio_radius(t)
+
+    uranus_x = uranus_r * math.cos(uranus_b_rad) * math.cos(uranus_lon_rad)
+    uranus_y = uranus_r * math.cos(uranus_b_rad) * math.sin(uranus_lon_rad)
+
+    geo_x = uranus_x - earth_x
+    geo_y = uranus_y - earth_y
+
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Uranus's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-1, +1].
+ura_get_geo_ecl_lat(float t) =>
+    lon_rad = ura_get_helio_lon(t) * PI / 180.0
+    lat_rad = ura_get_helio_lat(t)  // already in radians
+    r = ura_get_helio_radius(t)
+
+    uranus_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    uranus_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    uranus_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = uranus_x - earth_x
+    geo_y = uranus_y - earth_y
+    geo_z = uranus_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Uranus's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+ura_get_geo_decl(float t) =>
+    float ecl_lon_deg = ura_get_geo_lon(t)
+    float ecl_lat_deg = ura_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ NEPTUNE (nep_*) ════════════════════
+
+
+// @function Computes Neptune's heliocentric ecliptic longitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360).
+nep_get_helio_lon(float t) =>
+    array<vsop_term> L0 = array.new<vsop_term>()
+    array.push(L0, vsop_term.new(5.31188633047, 0.0, 0.0))
+    array.push(L0, vsop_term.new(0.01798475509, 2.90101273890, 38.13303563780))
+    array.push(L0, vsop_term.new(0.01019727662, 0.48580923660, 1.48447270830))
+    array.push(L0, vsop_term.new(0.00124531845, 4.83008090682, 36.64856292950))
+    array.push(L0, vsop_term.new(0.00042064450, 5.41054993053, 2.96894541660))
+    array.push(L0, vsop_term.new(0.00037714584, 6.09221834946, 35.16409022120))
+    array.push(L0, vsop_term.new(0.00033784738, 1.24488865578, 76.26607127560))
+    array.push(L0, vsop_term.new(0.00016482741, 7.02338996010, 491.55792945680))
+    array.push(L0, vsop_term.new(0.00009198582, 4.93747059924, 39.61750834610))
+    array.push(L0, vsop_term.new(0.00008994250, 0.27462171806, 175.16605980020))
+
+    array<vsop_term> L1 = array.new<vsop_term>()
+    array.push(L1, vsop_term.new(38.37687716731, 0.0, 0.0))
+    array.push(L1, vsop_term.new(0.00016604172, 4.86323329249, 1.48447270830))
+    array.push(L1, vsop_term.new(0.00015744045, 2.27887427527, 38.13303563780))
+    array.push(L1, vsop_term.new(0.00001306261, 3.67285209620, 2.96894541660))
+    array.push(L1, vsop_term.new(0.00000604842, 1.50483042790, 35.16409022120))
+
+    array<vsop_term> L2 = array.new<vsop_term>()
+    array.push(L2, vsop_term.new(0.00000286136, 1.18985661922, 38.13303563780))
+    array.push(L2, vsop_term.new(0.00000295650, 1.85520880574, 1.48447270830))
+    array.push(L2, vsop_term.new(0.00000102284, 0.0, 0.0))
+
+    L0sum = eval_vsop87(L0, t)
+    L1sum = eval_vsop87(L1, t)
+    L2sum = eval_vsop87(L2, t)
+    lon_rad = L0sum + L1sum * t + L2sum * t * t
+    mod360(lon_rad * RAD_TO_DEG)
+
+
+// @function Computes Neptune's heliocentric ecliptic latitude using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric ecliptic latitude in radians, range approximately [-0.035, +0.035]. Note: Returns radians, not degrees.
+nep_get_helio_lat(float t) =>
+    array<vsop_term> B0 = array.new<vsop_term>()
+    array.push(B0, vsop_term.new(0.03088622933, 1.44104372644, 38.13303563780))
+    array.push(B0, vsop_term.new(0.00027780087, 5.91271882843, 76.26607127560))
+    array.push(B0, vsop_term.new(0.00027623609, 0.0, 0.0))
+    array.push(B0, vsop_term.new(0.00015355489, 2.52123799551, 36.64856292950))
+    array.push(B0, vsop_term.new(0.00015448133, 3.50877079215, 39.61750834610))
+    eval_vsop87(B0, t)  // radians
+
+
+// @function Computes Neptune's heliocentric radius (distance from Sun) using VSOP87 theory.
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 29.81-30.33 AU.
+nep_get_helio_radius(float t) =>
+    array<vsop_term> R0 = array.new<vsop_term>()
+    array.push(R0, vsop_term.new(30.07013206102, 0.0, 0.0))
+    array.push(R0, vsop_term.new(0.27062259490, 1.32999458930, 38.13303563780))
+    array.push(R0, vsop_term.new(0.01691764281, 3.25186138896, 36.64856292950))
+    array.push(R0, vsop_term.new(0.00807830737, 5.18592836167, 1.48447270830))
+    array.push(R0, vsop_term.new(0.00537760510, 4.52113902845, 35.16409022120))
+
+    array<vsop_term> R1 = array.new<vsop_term>()
+    array.push(R1, vsop_term.new(0.00236338618, 0.70497954792, 38.13303563780))
+    array.push(R1, vsop_term.new(0.00013220279, 3.32015499895, 1.48447270830))
+    array.push(R1, vsop_term.new(0.00008621863, 6.21628951630, 35.16409022120))
+
+    array<vsop_term> R2 = array.new<vsop_term>()
+    array.push(R2, vsop_term.new(0.00004247776, 5.89911844921, 38.13303563780))
+    array.push(R2, vsop_term.new(0.00000217404, 0.34589546713, 1.48447270830))
+    array.push(R2, vsop_term.new(0.00000163025, 2.23872947130, 35.16409022120))
+
+    R0sum = eval_vsop87(R0, t)
+    R1sum = eval_vsop87(R1, t)
+    R2sum = eval_vsop87(R2, t)
+    R0sum + R1sum * t + R2sum * t * t
+
+
+// @function Computes Neptune's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+nep_get_geo_speed(float t) =>
+    // Neptune terms and sums
+    array<vsop_term> L0_s = array.new<vsop_term>()
+    array.push(L0_s, vsop_term.new(5.31188633046, 0.0, 0.0))
+    array.push(L0_s, vsop_term.new(0.01798475530, 2.90101273050, 38.13303563780))
+    array.push(L0_s, vsop_term.new(0.01019727652, 0.48580923660, 1.48447270830))
+    array.push(L0_s, vsop_term.new(0.00124531845, 4.83008090676, 36.64856292950))
+
+    array<vsop_term> L1_s = array.new<vsop_term>()
+    array.push(L1_s, vsop_term.new(38.37687716731, 0.0, 0.0))
+    array.push(L1_s, vsop_term.new(0.00016604172, 4.86323329249, 1.48447270830))
+
+    array<vsop_term> L2_s = array.new<vsop_term>()
+    array.push(L2_s, vsop_term.new(0.00000286136, 1.18985661922, 38.13303563780))
+
+    float L0sum_s = eval_vsop87(L0_s, t)
+    float L1sum_s = eval_vsop87(L1_s, t)
+    float L2sum_s = eval_vsop87(L2_s, t)
+    float lon_rad_s = L0sum_s + L1sum_s * t + L2sum_s * t * t
+
+    float dL0_s = eval_vsop87_derivative(L0_s, t)
+    float dL1_s = eval_vsop87_derivative(L1_s, t)
+    float dL2_s = eval_vsop87_derivative(L2_s, t)
+    float dlon_dt_s = dL0_s + L1sum_s + t * dL1_s + 2.0 * t * L2sum_s + t * t * dL2_s
+
+    array<vsop_term> B0_s = array.new<vsop_term>()
+    array.push(B0_s, vsop_term.new(0.03088622933, 1.44104372626, 38.13303563780))
+
+    float lat_rad_s = eval_vsop87(B0_s, t)
+    float dlat_dt_s = eval_vsop87_derivative(B0_s, t)
+
+    array<vsop_term> R0_s = array.new<vsop_term>()
+    array.push(R0_s, vsop_term.new(30.07013206102, 0.0, 0.0))
+    array.push(R0_s, vsop_term.new(0.27062259490, 1.32999458930, 38.13303563780))
+
+    array<vsop_term> R1_s = array.new<vsop_term>()
+    array.push(R1_s, vsop_term.new(0.00236338618, 0.70497954792, 38.13303563780))
+
+    float R0sum_s = eval_vsop87(R0_s, t)
+    float R1sum_s = eval_vsop87(R1_s, t)
+    float r_s = R0sum_s + R1sum_s * t
+
+    float dR0_s = eval_vsop87_derivative(R0_s, t)
+    float dR1_s = eval_vsop87_derivative(R1_s, t)
+    float dr_dt_s = dR0_s + R1sum_s + t * dR1_s
+
+    float cl_s = math.cos(lon_rad_s)
+    float sl_s = math.sin(lon_rad_s)
+    float cb_s = math.cos(lat_rad_s)
+    float sb_s = math.sin(lat_rad_s)
+
+    float x_s = r_s * cb_s * cl_s
+    float y_s = r_s * cb_s * sl_s
+
+    float vx_s = dr_dt_s * cb_s * cl_s - r_s * dlat_dt_s * sb_s * cl_s - r_s * cb_s * sl_s * dlon_dt_s
+    float vy_s = dr_dt_s * cb_s * sl_s - r_s * dlat_dt_s * sb_s * sl_s + r_s * cb_s * cl_s * dlon_dt_s
+
+    
+    // Earth terms and sums (from get_earth_helio_coords)
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t)
+    float L1sum_e = eval_vsop87(L1_e, t)
+    float L2sum_e = eval_vsop87(L2_e, t)
+    float lon_rad_e = L0sum_e + L1sum_e * t + L2sum_e * t * t
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t)
+    float dL1_e = eval_vsop87_derivative(L1_e, t)
+    float dL2_e = eval_vsop87_derivative(L2_e, t)
+    float dlon_dt_e = dL0_e + L1sum_e + t * dL1_e + 2.0 * t * L2sum_e + t * t * dL2_e
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t)
+    float B1sum_e = eval_vsop87(B1_e, t)
+    float lat_rad_e = B0sum_e + B1sum_e * t
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t)
+    float dB1_e = eval_vsop87_derivative(B1_e, t)
+    float dlat_dt_e = dB0_e + B1sum_e + t * dB1_e
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t)
+    float R1sum_e = eval_vsop87(R1_e, t)
+    float R2sum_e = eval_vsop87(R2_e, t)
+    float r_e = R0sum_e + R1sum_e * t + R2sum_e * t * t
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t)
+    float dR1_e = eval_vsop87_derivative(R1_e, t)
+    float dR2_e = eval_vsop87_derivative(R2_e, t)
+    float dr_dt_e = dR0_e + R1sum_e + t * dR1_e + 2.0 * t * R2sum_e + t * t * dR2_e
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+
+    float geo_x = x_s - x_e
+    float geo_y = y_s - y_e
+    float v_geo_x = vx_s - vx_e
+    float v_geo_y = vy_s - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 365250.0
+
+
+// ────────────────────────────── GEO ──────────────────────────────
+// @function Computes Neptune's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+nep_get_geo_lon(float t) =>
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    neptune_lon_rad = nep_get_helio_lon(t) * PI / 180.0
+    neptune_b_rad   = nep_get_helio_lat(t)  // already in radians
+    neptune_r       = nep_get_helio_radius(t)
+
+    neptune_x = neptune_r * math.cos(neptune_b_rad) * math.cos(neptune_lon_rad)
+    neptune_y = neptune_r * math.cos(neptune_b_rad) * math.sin(neptune_lon_rad)
+
+    geo_x = neptune_x - earth_x
+    geo_y = neptune_y - earth_y
+
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+
+// @function Computes Neptune's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-2, +2].
+nep_get_geo_ecl_lat(float t) =>
+    lon_rad = nep_get_helio_lon(t) * PI / 180.0
+    lat_rad = nep_get_helio_lat(t)  // already in radians
+    r = nep_get_helio_radius(t)
+
+    neptune_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    neptune_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    neptune_z = r * math.sin(lat_rad)
+
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t)
+
+    geo_x = neptune_x - earth_x
+    geo_y = neptune_y - earth_y
+    geo_z = neptune_z - earth_z
+
+    r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+
+// @function Computes Neptune's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian millennia from J2000.0 (use get_julian_millennia(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+nep_get_geo_decl(float t) =>
+    float ecl_lon_deg = nep_get_geo_lon(t)
+    float ecl_lat_deg = nep_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * PI / 180.0
+    float ecl_lat_rad = ecl_lat_deg * PI / 180.0
+    float epsilon_deg = get_obliquity(t)
+    float epsilon_rad = epsilon_deg * PI / 180.0
+
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(epsilon_rad) + math.cos(ecl_lat_rad) * math.sin(epsilon_rad) * math.sin(ecl_lon_rad)
+    float delta_rad = math.asin(sin_delta)
+    delta_rad * RAD_TO_DEG
+
+
+// ════════════════════ MOON (moon_*) ════════════════════
+
+
+// Computes the fundamental lunar arguments (in degrees).
+// Returns [Lp, D, M, Mp, F], where:
+// - Lp: Mean longitude of the Moon
+// - D: Mean elongation of the Moon from the Sun
+// - M: Mean anomaly of the Sun
+// - Mp: Mean anomaly of the Moon
+// - F: Moon's argument of latitude
+get_fundamentals(float T) =>
+    float Lp = 218.3164477 + 481267.88123421 * T - 0.0015786 * T*T + T*T*T / 545868.0 - T*T*T*T / 113065000.0
+    float D  = 297.8501921 + 445267.1114034 * T - 0.0018819 * T*T + T*T*T / 545868.0 - T*T*T*T / 113065000.0
+    float M  = 357.5291092 + 35999.0502909 * T - 0.0001536 * T*T + T*T*T / 24490000.0
+    float Mp = 134.9633964 + 477198.8675055 * T + 0.0087414 * T*T + T*T*T / 69699.0 - T*T*T*T / 14712000.0
+    float F  = 93.2720950 + 483202.0175238 * T - 0.0036539 * T*T - T*T*T / 3526000.0 + T*T*T*T / 863310000.0
+    [Lp, D, M, Mp, F]
+
+// Computes the Earth's orbital eccentricity factor for scaling perturbation terms.
+get_E(float T) =>
+    1.0 - 0.002516 * T - 0.0000074 * T*T
+
+// Evaluates the longitude perturbation sigma_l (in degrees).
+eval_sigma_l(float D, float M, float Mp, float F, float E) =>
+    // Parallel arrays for perturbation coefficients (from Meeus Table 47.A, truncated to 48 main terms for efficiency).
+    // If higher precision is needed, add the remaining ~12 smaller terms from the full table.
+    array<int> iDs_g1 = array.from(0, 2, 2, 0, 0, 0, 2, 2, 2, 2, 0, 0)
+    array<int> iDs_g2 = array.from(4, 0, 2, 0, 4, 0, 4, 2, 2, 2, 1, 2)
+    array<int> iDs_g3 = array.from(2, 4, 0, 2, 0, 2, 4, 1, 2, 0, 2, 2)
+    array<int> iDs_g4 = array.from(2, 4, 1, 3, 2, 4, 0, 2, 2, 2, 4)
+    array<int> iDs = array.concat(array.concat(array.concat(iDs_g1, iDs_g2), iDs_g3), iDs_g4)
+
+    array<int> iMs_g1 = array.from(0, 0, 0, 0, 1, 0, 0, -1, 0, -1, 1, 1)
+    array<int> iMs_g2 = array.from(0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0)
+    array<int> iMs_g3 = array.from(-1, -1, 0, 2, 0, 0, -1, 0, -1, 2, -1, 0)
+    array<int> iMs_g4 = array.from(0, -1, 0, 0, 1, -1, 0, 1, 2, 0, 0)
+    array<int> iMs = array.concat(array.concat(array.concat(iMs_g1, iMs_g2), iMs_g3), iMs_g4)
+
+    array<int> iMps_g1 = array.from(1, -1, 0, 2, 0, 0, -2, -1, 1, 0, -1, 1)
+    array<int> iMps_g2 = array.from(-1, 1, -1, 3, -2, 0, 0, 0, 1, 0, 1, 2)
+    array<int> iMps_g3 = array.from(1, -1, 2, 0, -3, 0, -1, -2, -1, -1, 2, 1)
+    array<int> iMps_g4 = array.from(-2, 0, 0, -1, -3, 1, 4, 2, -1, 3, 1)
+    array<int> iMps = array.concat(array.concat(array.concat(iMps_g1, iMps_g2), iMps_g3), iMps_g4)
+
+    array<int> iFs_g1 = array.from(0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0)
+    array<int> iFs_g2 = array.from(0, 2, 0, 0, 0, -2, 0, 0, 0, -2, 0, 0)
+    array<int> iFs_g3 = array.from(0, 0, 2, 0, 0, 0, -2, 0, 0, -1, -2, -1)
+    array<int> iFs_g4 = array.from(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    array<int> iFs = array.concat(array.concat(array.concat(iFs_g1, iFs_g2), iFs_g3), iFs_g4)
+
+    array<int> As_g1 = array.from(6288774, 1274027, 658314, 213618, -185116, -114332, 58793, 57066, 53322, 45758, -40923, -34720)
+    array<int> As_g2 = array.from(-30383, 15327, -12528, 10980, 10675, 10034, 8548, -7888, -6766, -5163, 4988, 4036)
+    array<int> As_g3 = array.from(3994, 3861, 3665, -2689, -2602, 2390, -2348, 2236, -2120, -2069, 2048, -1773)
+    array<int> As_g4 = array.from(-1595, 1215, -1110, -892, -810, 759, -713, -700, 691, 596, 549)
+    array<int> As = array.concat(array.concat(array.concat(As_g1, As_g2), As_g3), As_g4)
+
+    float sum = 0.0
+    int size = array.size(iDs)
+    for i = 0 to size - 1
+        float amp = array.get(As, i)
+        int abs_iM = math.abs(array.get(iMs, i))
+        if abs_iM == 1
+            amp *= E
+        else if abs_iM == 2
+            amp *= E * E
+        float arg = (float(array.get(iDs, i)) * D + float(array.get(iMs, i)) * M + float(array.get(iMps, i)) * Mp + float(array.get(iFs, i)) * F) * DEG_TO_RAD
+        sum += amp * math.sin(arg)
+    sum / 1000000.0
+
+// Evaluates the latitude perturbation sigma_b (in degrees).
+eval_sigma_b(float D, float M, float Mp, float F, float E) =>
+    // Parallel arrays for perturbation coefficients (from Meeus Table 47.B, truncated to 43 main terms for efficiency).
+    // If higher precision is needed, add the remaining ~17 smaller terms from the full table.
+    array<int> iDs_g1 = array.from(0, 0, 0, 2, 2, 2, 2, 0, 2, 0)
+    array<int> iDs_g2 = array.from(2, 2, 2, 2, 2, 2, 2, 2, 2, 0)
+    array<int> iDs_g3 = array.from(0, 0, 0, 0, 0, 0, 0, 2, 0, 2)
+    array<int> iDs_g4 = array.from(2, 2, 2, 0, 2, 2, 0, 0, 0, 4, 0, 0, 0)
+    array<int> iDs = array.concat(array.concat(array.concat(iDs_g1, iDs_g2), iDs_g3), iDs_g4)
+
+    array<int> iMs_g1 = array.from(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    array<int> iMs_g2 = array.from(-1, 0, -1, 0, -1, -1, 0, -1, 0, 0)
+    array<int> iMs_g3 = array.from(0, 0, 1, 0, 1, 0, -1, 0, 0, 0, 1, 1, -1)
+    array<int> iMs_g4 = array.from(1, -1, 0, 1, -1, 1, 0, 1, -1, -1, 0)
+    array<int> iMs = array.concat(array.concat(array.concat(iMs_g1, iMs_g2), iMs_g3), iMs_g4)
+
+    array<int> iMps_g1 = array.from(0, 1, 1, 0, -1, -1, 0, 2, 1, 2)
+    array<int> iMps_g2 = array.from(0, -2, -1, 1, -1, 1, -2, 1, 2, 0)
+    array<int> iMps_g3 = array.from(3, 3, 0, -1, 0, -1, 1, 0, -2, -3, 2, -1, -2)
+    array<int> iMps_g4 = array.from(1, -1, -1, -1, 1, 0, -1, 1, -1, -1, -1)
+    array<int> iMps = array.concat(array.concat(array.concat(iMps_g1, iMps_g2), iMps_g3), iMps_g4)
+
+    array<int> iFs_g1 = array.from(1, 1, -1, -1, 1, -1, 1, 1, -1, -1)
+    array<int> iFs_g2 = array.from(-1, -1, 1, 1, -1, -1, 1, 1, -1, 3)
+    array<int> iFs_g3 = array.from(1, -1, 1, 1, -1, -1, 1, -3, 1, -1, 1, -1, -1)
+    array<int> iFs_g4 = array.from(1, -3, 1, -1, -1, 1, -1, 1, -1, -1)
+    array<int> iFs = array.concat(array.concat(array.concat(iFs_g1, iFs_g2), iFs_g3), iFs_g4)
+
+    array<int> As_g1 = array.from(5128122, 280602, 277693, 173237, 55413, 46271, 32573, 17198, 9266, 8822)
+    array<int> As_g2 = array.from(-8216, 4324, 4200, 3359, 2463, 2211, -2065, -1921, 1335, 1102)
+    array<int> As_g3 = array.from(1021, 833, 777, 671, 607, 596, 491, 451, 439, 422, 421, 366, 351)
+    array<int> As_g4 = array.from(331, 315, 302, 285, 264, 229, 223, 223, 223, 220)
+    array<int> As = array.concat(array.concat(array.concat(As_g1, As_g2), As_g3), As_g4)
+
+    float sum = 0.0
+    int size = array.size(iDs)
+    for i = 0 to size - 1
+        float amp = array.get(As, i)
+        int abs_iM = math.abs(array.get(iMs, i))
+        if abs_iM == 1
+            amp *= E
+        else if abs_iM == 2
+            amp *= E * E
+        float arg = (float(array.get(iDs, i)) * D + float(array.get(iMs, i)) * M + float(array.get(iMps, i)) * Mp + float(array.get(iFs, i)) * F) * DEG_TO_RAD
+        sum += amp * math.sin(arg)
+    sum / 1000000.0
+
+// @function Returns geocentric ecliptic longitude of the Moon.
+// @param T (float) Julian centuries from J2000.0 (use core.get_julian_centuries).
+// @returns (float) Longitude in degrees, range [0, 360).
+export get_geo_ecl_lon(float time_) =>
+    float T = get_julian_centuries(time_)
+    [Lp, D, M, Mp, F] = get_fundamentals(T)
+    E = get_E(T)
+    sigma_l = eval_sigma_l(D, M, Mp, F, E)
+    mod360(Lp + sigma_l)
+
+// @function Returns geocentric ecliptic latitude of the Moon.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Latitude in degrees.
+export get_geo_ecl_lat(float time_) =>
+    float T = get_julian_centuries(time_)
+    [Lp, D, M, Mp, F] = get_fundamentals(T)
+    E = get_E(T)
+    sigma_b = eval_sigma_b(D, M, Mp, F, E)
+    sigma_b
+
+// @function Returns mean obliquity of the ecliptic.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Obliquity in degrees.
+export get_obliquity_j(float time_) =>
+    float T = get_julian_centuries(time_)
+    float base = 23.0 + 26.0 / 60.0 + 21.448 / 3600.0
+    float delta = 46.815 * T + 0.00059 * T*T - 0.001813 * T*T*T
+    base - delta / 3600.0
+
+// @function Returns geocentric equatorial declination of the Moon.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees, range [-90, +90] where positive is north.
+export get_declination(float time_) =>
+    float lambda = get_geo_ecl_lon(time_)
+    float beta = get_geo_ecl_lat(time_)
+    float eps = get_obliquity_j(time_)
+    float lambda_rad = lambda * DEG_TO_RAD
+    float beta_rad = beta * DEG_TO_RAD
+    float eps_rad = eps * DEG_TO_RAD
+    float sin_delta = math.sin(beta_rad) * math.cos(eps_rad) + math.cos(beta_rad) * math.sin(eps_rad) * math.sin(lambda_rad)
+    math.asin(sin_delta) * RAD_TO_DEG
+
+// Internal: raw mean node calculation (not wrapped)
+_mean_node_raw(float T) =>
+    125.04452 - 1934.136261 * T + 0.0020708 * T*T + T*T*T / 450000.0
+
+// @function Returns mean longitude of the Moon's North Node (ascending node).
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360).
+// @note Mean node is a simple averaged calculation, reducing computational error. Used for declination calculations.
+export get_mean_north_node_lon(float time_) =>
+    float T = get_julian_centuries(time_)
+    mod360(_mean_node_raw(T))
+
+
+// @function Returns mean longitude of the Moon's South Node (descending node).
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360). Equals North Node + 180°.
+export get_mean_south_node_lon(float time_) =>
+    mod360(get_mean_north_node_lon(time_) + 180.0)
+
+
+// @function Returns true longitude of the Moon's North Node with perturbation corrections.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360).
+// @note True node includes periodic perturbations but formula is low precision. Consider using mean node for consistency.
+export get_true_north_node_lon(float time_) =>
+    float T = get_julian_centuries(time_)
+    node = _mean_node_raw(T)
+    D = 297.85036 + 445267.111480 * T - 0.0019142 * T*T + T*T*T / 189474.0
+    M = 357.52772 + 35999.050340 * T - 0.0001603 * T*T - T*T*T / 300000.0
+    Mp = 134.96298 + 477198.867398 * T + 0.0086972 * T*T + T*T*T / 56250.0
+    F = 93.27191 + 483202.017538 * T - 0.0036825 * T*T + T*T*T / 327270.0
+
+    node += -1.4979 * math.sin(DEG_TO_RAD * (2 * D))
+         - 0.1500 * math.sin(DEG_TO_RAD * M)
+         - 0.1226 * math.sin(DEG_TO_RAD * (2 * F))
+         + 0.1176 * math.sin(DEG_TO_RAD * (2 * D - Mp))
+         - 0.0801 * math.sin(DEG_TO_RAD * (2 * D + Mp))
+    mod360(node)
+
+// @function Returns true longitude of the Moon's South Node with perturbation corrections.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Longitude in degrees, range [0, 360). Equals True North Node + 180°.
+export get_true_south_node_lon(float time_) =>
+    mod360(get_true_north_node_lon(time_) + 180.0)
+
+// @function Returns declination of the Moon's North Node.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees, range [-23.4, +23.4] (bounded by obliquity).
+// @note Uses mean node for calculation (more consistent than true node).
+export get_north_node_declination(float time_) =>
+    float a_ = get_mean_north_node_lon(time_)
+    float e_ = get_obliquity_j(time_)
+    math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
+
+// @function Returns declination of the Moon's South Node.
+// @param T (float) Julian centuries from J2000.0.
+// @returns (float) Declination in degrees. Inverse of North Node declination.
+export get_south_node_declination(float time_) =>
+    float a_ = mod360(get_mean_north_node_lon(time_) + 180.0)
+    float e_ = get_obliquity_j(time_)
+    math.asin(math.sin(a_ * DEG_TO_RAD) * math.sin(e_ * DEG_TO_RAD)) * RAD_TO_DEG
+
+// ════════════════════ PLUTO (plu_*) ════════════════════
+
+
+// Obliquity of the ecliptic (in degrees)
+plu_get_obliquity(float t) =>
+    float base = 23.0 + 26.0 / 60.0 + 21.448 / 3600.0
+    float delta = 46.815 * t + 0.00059 * t*t - 0.001813 * t*t*t
+    base - delta / 3600.0
+
+// @function Computes Pluto's heliocentric ecliptic longitude using Meeus truncated analytical series.
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Heliocentric ecliptic longitude in degrees, normalized to range [0, 360). Accurate within ±1 century from J2000.
+plu_get_helio_lon(float t) =>
+    float d = DAYS_PER_CENTURY * t
+    float S = 50.03 + 0.033459652 * d
+    float P = 238.95 + 0.003968789 * d
+    float sp = S - P
+    float lon = 238.9508 + 0.00400703 * d
+    lon += -19.799 * math.sin(DEG_TO_RAD * P) + 19.848 * math.cos(DEG_TO_RAD * P)
+    lon += 0.897 * math.sin(DEG_TO_RAD * 2 * P) - 4.956 * math.cos(DEG_TO_RAD * 2 * P)
+    lon += 0.610 * math.sin(DEG_TO_RAD * 3 * P) + 1.211 * math.cos(DEG_TO_RAD * 3 * P)
+    lon += -0.341 * math.sin(DEG_TO_RAD * 4 * P) - 0.190 * math.cos(DEG_TO_RAD * 4 * P)
+    lon += 0.128 * math.sin(DEG_TO_RAD * 5 * P) - 0.034 * math.cos(DEG_TO_RAD * 5 * P)
+    lon += -0.038 * math.sin(DEG_TO_RAD * 6 * P) + 0.031 * math.cos(DEG_TO_RAD * 6 * P)
+    lon += 0.020 * math.sin(DEG_TO_RAD * sp) - 0.010 * math.cos(DEG_TO_RAD * sp)
+    mod360(lon)
+
+// @function Computes Pluto's heliocentric ecliptic latitude using Meeus truncated analytical series.
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Heliocentric ecliptic latitude in degrees, range approximately [-17, +17]. Accurate within ±1 century from J2000.
+plu_get_helio_lat(float t) =>
+    float d = DAYS_PER_CENTURY * t
+    float S = 50.03 + 0.033459652 * d
+    float P = 238.95 + 0.003968789 * d
+    float sp = S - P
+    float lat = -3.9082
+    lat += -5.453 * math.sin(DEG_TO_RAD * P) - 14.975 * math.cos(DEG_TO_RAD * P)
+    lat += 3.527 * math.sin(DEG_TO_RAD * 2 * P) + 1.673 * math.cos(DEG_TO_RAD * 2 * P)
+    lat += -1.051 * math.sin(DEG_TO_RAD * 3 * P) + 0.328 * math.cos(DEG_TO_RAD * 3 * P)
+    lat += 0.179 * math.sin(DEG_TO_RAD * 4 * P) - 0.292 * math.cos(DEG_TO_RAD * 4 * P)
+    lat += 0.019 * math.sin(DEG_TO_RAD * 5 * P) + 0.100 * math.cos(DEG_TO_RAD * 5 * P)
+    lat += -0.031 * math.sin(DEG_TO_RAD * 6 * P) - 0.026 * math.cos(DEG_TO_RAD * 6 * P)
+    lat += 0.011 * math.cos(DEG_TO_RAD * sp)
+    lat
+
+// @function Computes Pluto's heliocentric radius (distance from Sun) using Meeus truncated analytical series.
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Heliocentric radius in astronomical units (AU). Typical range is 29.6-49.3 AU. Accurate within ±1 century from J2000.
+plu_get_helio_radius(float t) =>
+    float d = DAYS_PER_CENTURY * t
+    float P = 238.95 + 0.003968789 * d
+    float r = 40.72
+    r += 6.68 * math.sin(DEG_TO_RAD * P) + 6.90 * math.cos(DEG_TO_RAD * P)
+    r += -1.18 * math.sin(DEG_TO_RAD * 2 * P) - 0.03 * math.cos(DEG_TO_RAD * 2 * P)
+    r += 0.15 * math.sin(DEG_TO_RAD * 3 * P) - 0.14 * math.cos(DEG_TO_RAD * 3 * P)
+    r
+
+// @function Computes Pluto's geocentric ecliptic longitude (as seen from Earth).
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Geocentric ecliptic longitude in degrees, normalized to range [0, 360).
+plu_get_geo_lon(float t) =>
+    float t_mill = t / 10.0
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t_mill)
+    float pluto_lon_rad = plu_get_helio_lon(t) * DEG_TO_RAD
+    float pluto_lat_rad = plu_get_helio_lat(t) * DEG_TO_RAD
+    float pluto_r = plu_get_helio_radius(t)
+    float pluto_x = pluto_r * math.cos(pluto_lat_rad) * math.cos(pluto_lon_rad)
+    float pluto_y = pluto_r * math.cos(pluto_lat_rad) * math.sin(pluto_lon_rad)
+    float geo_x = pluto_x - earth_x
+    float geo_y = pluto_y - earth_y
+    mod360(custom_atan2(geo_y, geo_x) * RAD_TO_DEG)
+
+// @function Computes Pluto's geocentric ecliptic latitude (as seen from Earth).
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Geocentric ecliptic latitude in degrees, range approximately [-17, +17].
+plu_get_geo_ecl_lat(float t) =>
+    float t_mill = t / 10.0
+    float lon_rad = plu_get_helio_lon(t) * DEG_TO_RAD
+    float lat_rad = plu_get_helio_lat(t) * DEG_TO_RAD
+    float r = plu_get_helio_radius(t)
+    float pluto_x = r * math.cos(lat_rad) * math.cos(lon_rad)
+    float pluto_y = r * math.cos(lat_rad) * math.sin(lon_rad)
+    float pluto_z = r * math.sin(lat_rad)
+    [earth_x, earth_y, earth_z] = get_earth_helio_coords(t_mill)
+    float geo_x = pluto_x - earth_x
+    float geo_y = pluto_y - earth_y
+    float geo_z = pluto_z - earth_z
+    float r_xy = math.sqrt(geo_x * geo_x + geo_y * geo_y)
+    custom_atan2(geo_z, r_xy) * RAD_TO_DEG
+
+// @function Computes Pluto's geocentric equatorial declination (as seen from Earth).
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Geocentric equatorial declination in degrees, range [-90, +90] where positive is north.
+plu_get_geo_decl(float t) =>
+    float ecl_lon_deg = plu_get_geo_lon(t)
+    float ecl_lat_deg = plu_get_geo_ecl_lat(t)
+    float ecl_lon_rad = ecl_lon_deg * DEG_TO_RAD
+    float ecl_lat_rad = ecl_lat_deg * DEG_TO_RAD
+    float eps = plu_get_obliquity(t)
+    float eps_rad = eps * DEG_TO_RAD
+    float sin_delta = math.sin(ecl_lat_rad) * math.cos(eps_rad) + math.cos(ecl_lat_rad) * math.sin(eps_rad) * math.sin(ecl_lon_rad)
+    math.asin(sin_delta) * RAD_TO_DEG
+
+// @function Computes Pluto's geocentric longitude speed (rate of change over time).
+// @param t (float) Julian centuries from J2000.0 (use get_julian_centuries(time)).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion (apparent backward movement).
+plu_get_geo_speed(float t) =>
+    float days_per_cent = 36525.0
+    float d = days_per_cent * t
+    float S = 50.03 + 0.033459652 * d
+    float P = 238.95 + 0.003968789 * d
+    float sp = S - P
+
+    float dS_dt = 0.033459652 * days_per_cent
+    float dP_dt = 0.003968789 * days_per_cent
+    float dsp_dt = dS_dt - dP_dt
+
+    float dlon_dt_deg = 0.00400703 * days_per_cent
+    dlon_dt_deg += -19.799 * math.cos(DEG_TO_RAD * P) * DEG_TO_RAD * dP_dt + 19.848 * (-math.sin(DEG_TO_RAD * P)) * DEG_TO_RAD * dP_dt
+    dlon_dt_deg += 0.897 * math.cos(DEG_TO_RAD * 2 * P) * DEG_TO_RAD * 2 * dP_dt + (-4.956) * (-math.sin(DEG_TO_RAD * 2 * P)) * DEG_TO_RAD * 2 * dP_dt
+    dlon_dt_deg += 0.610 * math.cos(DEG_TO_RAD * 3 * P) * DEG_TO_RAD * 3 * dP_dt + 1.211 * (-math.sin(DEG_TO_RAD * 3 * P)) * DEG_TO_RAD * 3 * dP_dt
+    dlon_dt_deg += -0.341 * math.cos(DEG_TO_RAD * 4 * P) * DEG_TO_RAD * 4 * dP_dt + (-0.190) * (-math.sin(DEG_TO_RAD * 4 * P)) * DEG_TO_RAD * 4 * dP_dt
+    dlon_dt_deg += 0.128 * math.cos(DEG_TO_RAD * 5 * P) * DEG_TO_RAD * 5 * dP_dt + (-0.034) * (-math.sin(DEG_TO_RAD * 5 * P)) * DEG_TO_RAD * 5 * dP_dt
+    dlon_dt_deg += -0.038 * math.cos(DEG_TO_RAD * 6 * P) * DEG_TO_RAD * 6 * dP_dt + 0.031 * (-math.sin(DEG_TO_RAD * 6 * P)) * DEG_TO_RAD * 6 * dP_dt
+    dlon_dt_deg += 0.020 * math.cos(DEG_TO_RAD * sp) * DEG_TO_RAD * dsp_dt + (-0.010) * (-math.sin(DEG_TO_RAD * sp)) * DEG_TO_RAD * dsp_dt
+    float dlon_dt = dlon_dt_deg * DEG_TO_RAD
+
+    float dlat_dt_deg = 0.0
+    dlat_dt_deg += -5.453 * math.cos(DEG_TO_RAD * P) * DEG_TO_RAD * dP_dt + (-14.975) * (-math.sin(DEG_TO_RAD * P)) * DEG_TO_RAD * dP_dt
+    dlat_dt_deg += 3.527 * math.cos(DEG_TO_RAD * 2 * P) * DEG_TO_RAD * 2 * dP_dt + 1.673 * (-math.sin(DEG_TO_RAD * 2 * P)) * DEG_TO_RAD * 2 * dP_dt
+    dlat_dt_deg += -1.051 * math.cos(DEG_TO_RAD * 3 * P) * DEG_TO_RAD * 3 * dP_dt + 0.328 * (-math.sin(DEG_TO_RAD * 3 * P)) * DEG_TO_RAD * 3 * dP_dt
+    dlat_dt_deg += 0.179 * math.cos(DEG_TO_RAD * 4 * P) * DEG_TO_RAD * 4 * dP_dt + (-0.292) * (-math.sin(DEG_TO_RAD * 4 * P)) * DEG_TO_RAD * 4 * dP_dt
+    dlat_dt_deg += 0.019 * math.cos(DEG_TO_RAD * 5 * P) * DEG_TO_RAD * 5 * dP_dt + 0.100 * (-math.sin(DEG_TO_RAD * 5 * P)) * DEG_TO_RAD * 5 * dP_dt
+    dlat_dt_deg += -0.031 * math.cos(DEG_TO_RAD * 6 * P) * DEG_TO_RAD * 6 * dP_dt + (-0.026) * (-math.sin(DEG_TO_RAD * 6 * P)) * DEG_TO_RAD * 6 * dP_dt
+    dlat_dt_deg += 0.011 * (-math.sin(DEG_TO_RAD * sp)) * DEG_TO_RAD * dsp_dt
+    float dlat_dt = dlat_dt_deg * DEG_TO_RAD
+
+    float dr_dt = 0.0
+    dr_dt += 6.68 * math.cos(DEG_TO_RAD * P) * DEG_TO_RAD * dP_dt + 6.90 * (-math.sin(DEG_TO_RAD * P)) * DEG_TO_RAD * dP_dt
+    dr_dt += -1.18 * math.cos(DEG_TO_RAD * 2 * P) * DEG_TO_RAD * 2 * dP_dt + (-0.03) * (-math.sin(DEG_TO_RAD * 2 * P)) * DEG_TO_RAD * 2 * dP_dt
+    dr_dt += 0.15 * math.cos(DEG_TO_RAD * 3 * P) * DEG_TO_RAD * 3 * dP_dt + (-0.14) * (-math.sin(DEG_TO_RAD * 3 * P)) * DEG_TO_RAD * 3 * dP_dt
+
+    float lon_rad = plu_get_helio_lon(t) * DEG_TO_RAD
+    float lat_rad = plu_get_helio_lat(t) * DEG_TO_RAD
+    float r = plu_get_helio_radius(t)
+
+    float cl = math.cos(lon_rad)
+    float sl = math.sin(lon_rad)
+    float cb = math.cos(lat_rad)
+    float sb = math.sin(lat_rad)
+
+    float x = r * cb * cl
+    float y = r * cb * sl
+
+    float vx = dr_dt * cb * cl - r * dlat_dt * sb * cl - r * cb * sl * dlon_dt
+    float vy = dr_dt * cb * sl - r * dlat_dt * sb * sl + r * cb * cl * dlon_dt
+
+    // Earth terms with adjusted t_mill = t /10
+
+    float t_mill = t / 10.0
+
+    array<vsop_term> L0_e = array.new<vsop_term>()
+    array.push(L0_e, vsop_term.new(1.75347045673, 0.0, 0.0))
+    array.push(L0_e, vsop_term.new(0.03341656456, 4.66925680417, 6283.07584999140))
+    array.push(L0_e, vsop_term.new(0.00034894275, 4.62610241759, 12566.15169998280))
+    array.push(L0_e, vsop_term.new(0.00003417571, 2.82886579606, 3.52311834900))
+    array.push(L0_e, vsop_term.new(0.00003497056, 2.74411800971, 5753.38488489680))
+    array.push(L0_e, vsop_term.new(0.00003135896, 3.62767041756, 77713.77146812050))
+    array.push(L0_e, vsop_term.new(0.00002676218, 4.41808345438, 7860.41939243920))
+    array.push(L0_e, vsop_term.new(0.00002342687, 6.13516214446, 3930.20969621960))
+    array.push(L0_e, vsop_term.new(0.00001273166, 2.03709657878, 529.69096509460))
+    array.push(L0_e, vsop_term.new(0.00001324294, 0.74246341673, 11506.76976979360))
+
+    array<vsop_term> L1_e = array.new<vsop_term>()
+    array.push(L1_e, vsop_term.new(6283.31966747491, 0.0, 0.0))
+    array.push(L1_e, vsop_term.new(0.00206058863, 2.67823455584, 6283.07584999140))
+    array.push(L1_e, vsop_term.new(0.00004303419, 2.63512233481, 12566.15169998280))
+    array.push(L1_e, vsop_term.new(0.00000425264, 1.59046980729, 3.52311834900))
+
+    array<vsop_term> L2_e = array.new<vsop_term>()
+    array.push(L2_e, vsop_term.new(0.00008721859, 1.07253635559, 6283.07584999140))
+    array.push(L2_e, vsop_term.new(0.00000990990, 3.14159265359, 0.0))
+
+    float L0sum_e = eval_vsop87(L0_e, t_mill)
+    float L1sum_e = eval_vsop87(L1_e, t_mill)
+    float L2sum_e = eval_vsop87(L2_e, t_mill)
+    float lon_rad_e = L0sum_e + L1sum_e * t_mill + L2sum_e * t_mill * t_mill
+
+    float dL0_e = eval_vsop87_derivative(L0_e, t_mill)
+    float dL1_e = eval_vsop87_derivative(L1_e, t_mill)
+    float dL2_e = eval_vsop87_derivative(L2_e, t_mill)
+    float dlon_dt_mill = dL0_e + L1sum_e + t_mill * dL1_e + 2.0 * t_mill * L2sum_e + t_mill * t_mill * dL2_e
+    float dlon_dt_e = dlon_dt_mill * 0.1
+
+    array<vsop_term> B0_e = array.new<vsop_term>()
+    array.push(B0_e, vsop_term.new(0.00000279620, 3.19870156017, 84334.66158130829))
+    array.push(B0_e, vsop_term.new(0.00000101643, 5.42248619256, 5507.55323866740))
+
+    array<vsop_term> B1_e = array.new<vsop_term>()
+    array.push(B1_e, vsop_term.new(0.00000009030, 3.89729061890, 5507.55323866740))
+
+    float B0sum_e = eval_vsop87(B0_e, t_mill)
+    float B1sum_e = eval_vsop87(B1_e, t_mill)
+    float lat_rad_e = B0sum_e + B1sum_e * t_mill
+
+    float dB0_e = eval_vsop87_derivative(B0_e, t_mill)
+    float dB1_e = eval_vsop87_derivative(B1_e, t_mill)
+    float dlat_dt_mill = dB0_e + B1sum_e + t_mill * dB1_e
+    float dlat_dt_e = dlat_dt_mill * 0.1
+
+    array<vsop_term> R0_e = array.new<vsop_term>()
+    array.push(R0_e, vsop_term.new(1.00000101778, 0.0, 0.0))
+    array.push(R0_e, vsop_term.new(0.01670861753, 3.09846350771, 6283.07584999140))
+    array.push(R0_e, vsop_term.new(0.00013956023, 3.05524609620, 12566.15169998280))
+    array.push(R0_e, vsop_term.new(0.00003083720, 5.19846674381, 77713.77146812050))
+    array.push(R0_e, vsop_term.new(0.00001628461, 1.17387749012, 5753.38488489680))
+
+    array<vsop_term> R1_e = array.new<vsop_term>()
+    array.push(R1_e, vsop_term.new(0.00005641515, 4.29697744294, 6283.07584999140))
+    array.push(R1_e, vsop_term.new(0.00001252975, 2.69402198377, 12566.15169998280))
+
+    array<vsop_term> R2_e = array.new<vsop_term>()
+    array.push(R2_e, vsop_term.new(0.00004392, 0.0, 0.0))
+
+    float R0sum_e = eval_vsop87(R0_e, t_mill)
+    float R1sum_e = eval_vsop87(R1_e, t_mill)
+    float R2sum_e = eval_vsop87(R2_e, t_mill)
+    float r_e = R0sum_e + R1sum_e * t_mill + R2sum_e * t_mill * t_mill
+
+    float dR0_e = eval_vsop87_derivative(R0_e, t_mill)
+    float dR1_e = eval_vsop87_derivative(R1_e, t_mill)
+    float dR2_e = eval_vsop87_derivative(R2_e, t_mill)
+    float dr_dt_mill = dR0_e + R1sum_e + t_mill * dR1_e + 2.0 * t_mill * R2sum_e + t_mill * t_mill * dR2_e
+    float dr_dt_e = dr_dt_mill * 0.1
+
+    float cl_e = math.cos(lon_rad_e)
+    float sl_e = math.sin(lon_rad_e)
+    float cb_e = math.cos(lat_rad_e)
+    float sb_e = math.sin(lat_rad_e)
+
+    float x_e = r_e * cb_e * cl_e
+    float y_e = r_e * cb_e * sl_e
+
+    float vx_e = dr_dt_e * cb_e * cl_e - r_e * dlat_dt_e * sb_e * cl_e - r_e * cb_e * sl_e * dlon_dt_e
+    float vy_e = dr_dt_e * cb_e * sl_e - r_e * dlat_dt_e * sb_e * sl_e + r_e * cb_e * cl_e * dlon_dt_e
+
+    float geo_x = x - x_e
+    float geo_y = y - y_e
+    float v_geo_x = vx - vx_e
+    float v_geo_y = vy - vy_e
+
+    float denom = geo_x * geo_x + geo_y * geo_y
+    float dlambda_dt = (geo_x * v_geo_y - geo_y * v_geo_x) / denom
+
+    dlambda_dt * RAD_TO_DEG / 36525.0
+
+
+// ════════════════════ UNIFIED API ════════════════════
+
+// Planet enumeration
+export enum Planet
+    Sun
+    Moon
+    Mercury
+    Venus
+    Earth
+    Mars
+    Jupiter
+    Saturn
+    Uranus
+    Neptune
+    Pluto
+
+
+// @function Normalizes any longitude value to the range [0, 360) degrees.
+// @param lon (float) Longitude in degrees (can be any value, including negative or >360).
+// @returns (float) Normalized longitude in range [0, 360).
+export normalizeLongitude(float lon) =>
+    float norm = lon % 360
+    norm += norm < 0 ? 360 : 0
+    norm
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Helper Functions for Easy Data Access
+// ═══════════════════════════════════════════════════════════════════
+
+// @function Converts a planet string identifier to Planet enum value.
+// @param planetStr (string) Planet name (case-insensitive). Supports formats: "Sun", "☉︎ Sun", "sun", "SUN"
+// @returns (Planet) Corresponding Planet enum. Returns Planet.Sun if string not recognized.
+// @note Supported planet strings: Sun, Moon, Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto
+export string_to_planet(string planetStr) =>
+     str.contains(str.lower(str.trim(planetStr)), "mercury") ? Planet.Mercury :
+     str.contains(str.lower(str.trim(planetStr)), "venus")   ? Planet.Venus   :
+     str.contains(str.lower(str.trim(planetStr)), "earth")   ? Planet.Earth   :
+     str.contains(str.lower(str.trim(planetStr)), "mars")    ? Planet.Mars    :
+     str.contains(str.lower(str.trim(planetStr)), "jupiter") ? Planet.Jupiter :
+     str.contains(str.lower(str.trim(planetStr)), "saturn")  ? Planet.Saturn  :
+     str.contains(str.lower(str.trim(planetStr)), "uranus")  ? Planet.Uranus  :
+     str.contains(str.lower(str.trim(planetStr)), "neptune") ? Planet.Neptune :
+     str.contains(str.lower(str.trim(planetStr)), "pluto")   ? Planet.Pluto   :
+     str.contains(str.lower(str.trim(planetStr)), "moon")    ? Planet.Moon    :
+     str.contains(str.lower(str.trim(planetStr)), "sun")     ? Planet.Sun     :
+     Planet.Sun
+
+// @function Returns planetary longitude with automatic coordinate system selection.
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @param preferGeo (bool) If true, return geocentric; if false, return heliocentric.
+// @returns (float) Longitude in degrees, normalized to range [0, 360).
+// @note Sun and Moon always return geocentric regardless of preference (heliocentric not applicable).
+export get_longitude(Planet p, float t, bool preferGeo) =>
+    if (p == Planet.Sun or p == Planet.Moon or preferGeo)
+        switch p
+            Planet.Sun     => get_sun_geo_lon(get_julian_millennia(t))
+            Planet.Moon    => get_geo_ecl_lon(t)
+            Planet.Mercury => mer_get_geo_lon(get_julian_millennia(t))
+            Planet.Venus   => ven_get_geo_lon(get_julian_millennia(t))
+            Planet.Mars    => mar_get_geo_lon(get_julian_millennia(t))
+            Planet.Jupiter => jup_get_geo_lon(get_julian_millennia(t))
+            Planet.Saturn  => sat_get_geo_lon(get_julian_millennia(t))
+            Planet.Uranus  => ura_get_geo_lon(get_julian_millennia(t))
+            Planet.Neptune => nep_get_geo_lon(get_julian_millennia(t))
+            Planet.Pluto   => plu_get_geo_lon(get_julian_centuries(t))
+    else
+        switch p
+            Planet.Sun     => get_sun_geo_lon(get_julian_millennia(t))  // Sun always geo
+            Planet.Mercury => mer_get_helio_lon(get_julian_millennia(t))
+            Planet.Venus   => ven_get_helio_lon(get_julian_millennia(t))
+            Planet.Earth   => get_earth_helio_lon(get_julian_millennia(t))
+            Planet.Mars    => mar_get_helio_lon(get_julian_millennia(t))
+            Planet.Jupiter => jup_get_helio_lon(get_julian_millennia(t))
+            Planet.Saturn  => sat_get_helio_lon(get_julian_millennia(t))
+            Planet.Uranus  => ura_get_helio_lon(get_julian_millennia(t))
+            Planet.Neptune => nep_get_helio_lon(get_julian_millennia(t))
+            Planet.Pluto   => plu_get_helio_lon(get_julian_centuries(t))
+
+// @function Returns planetary geocentric equatorial declination.
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @returns (float) Geocentric declination in degrees, range [-90, +90] where positive is north.
+// @note Declination is always geocentric (no heliocentric equivalent in library).
+export get_declination(Planet p, float t) =>
+    switch p
+        Planet.Sun     => get_sun_decl(get_julian_millennia(t))
+        Planet.Moon    => get_declination(t)
+        Planet.Mercury => mer_get_geo_decl(get_julian_millennia(t))
+        Planet.Venus   => ven_get_geo_decl(get_julian_millennia(t))
+        Planet.Mars    => mar_get_geo_decl(get_julian_millennia(t))
+        Planet.Jupiter => jup_get_geo_decl(get_julian_millennia(t))
+        Planet.Saturn  => sat_get_geo_decl(get_julian_millennia(t))
+        Planet.Uranus  => ura_get_geo_decl(get_julian_millennia(t))
+        Planet.Neptune => nep_get_geo_decl(get_julian_millennia(t))
+        Planet.Pluto   => plu_get_geo_decl(get_julian_centuries(t))
+
+// @function Returns planetary geocentric longitude speed (rate of change).
+// @param p (Planet) Planet to query.
+// @param t (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+// @returns (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion. Returns na for Moon.
+// @note Speed is always geocentric (no heliocentric equivalent in library). Moon speed calculation not implemented.
+export get_speed(Planet p, float t) =>
+    switch p
+        Planet.Sun     => get_sun_geo_speed(t)
+        Planet.Moon    => na  // Moon geocentric speed calculation not implemented
+        Planet.Mercury => mer_get_geo_speed(get_julian_millennia(t))
+        Planet.Venus   => ven_get_geo_speed(get_julian_millennia(t))
+        Planet.Mars    => mar_get_geo_speed(get_julian_millennia(t))
+        Planet.Jupiter => jup_get_geo_speed(get_julian_millennia(t))
+        Planet.Saturn  => sat_get_geo_speed(get_julian_millennia(t))
+        Planet.Uranus  => ura_get_geo_speed(get_julian_millennia(t))
+        Planet.Neptune => nep_get_geo_speed(get_julian_millennia(t))
+        Planet.Pluto   => plu_get_geo_speed(get_julian_centuries(t))
+
+
+// ──────────────── Averages: Planetary Longitude (Geo & Helio) ────────────────
+
+
+// @function get_avg6_geo_lon
+// @description Returns the arithmetic average of the geocentric longitudes for the six outer planets: Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average geocentric longitude of the six outer planets in degrees, range [0, 360).
+export get_avg6_geo_lon(float t) =>
+    array<float> longs = array.from(
+         mar_get_geo_lon(get_julian_millennia(t)),
+         jup_get_geo_lon(get_julian_millennia(t)),
+         sat_get_geo_lon(get_julian_millennia(t)),
+         ura_get_geo_lon(get_julian_millennia(t)),
+         nep_get_geo_lon(get_julian_millennia(t)),
+         plu_get_geo_lon(get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// @function get_avg6_helio_lon
+// @description Returns the arithmetic average of the heliocentric longitudes for the six outer planets: Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average heliocentric longitude of the six outer planets in degrees, range [0, 360).
+export get_avg6_helio_lon(float t) =>
+    array<float> longs = array.from(
+         mar_get_helio_lon(get_julian_millennia(t)),
+         jup_get_helio_lon(get_julian_millennia(t)),
+         sat_get_helio_lon(get_julian_millennia(t)),
+         ura_get_helio_lon(get_julian_millennia(t)),
+         nep_get_helio_lon(get_julian_millennia(t)),
+         plu_get_helio_lon(get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// @function get_avg8_geo_lon
+// @description Returns the arithmetic average of the geocentric longitudes for all eight classical planets: Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average geocentric longitude of all eight classical planets in degrees, range [0, 360).
+export get_avg8_geo_lon(float t) =>
+    array<float> longs = array.from(
+         mer_get_geo_lon(get_julian_millennia(t)),
+         ven_get_geo_lon(get_julian_millennia(t)),
+         mar_get_geo_lon(get_julian_millennia(t)),
+         jup_get_geo_lon(get_julian_millennia(t)),
+         sat_get_geo_lon(get_julian_millennia(t)),
+         ura_get_geo_lon(get_julian_millennia(t)),
+         nep_get_geo_lon(get_julian_millennia(t)),
+         plu_get_geo_lon(get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// @function get_avg8_helio_lon
+// @description Returns the arithmetic average of the heliocentric longitudes for all eight classical planets: Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, and Pluto.
+// @param t (float) Time in Unix timestamp (milliseconds).
+// @returns (float) Average heliocentric longitude of all eight classical planets in degrees, range [0, 360).
+export get_avg8_helio_lon(float t) =>
+    array<float> longs = array.from(
+         mer_get_helio_lon(get_julian_millennia(t)),
+         ven_get_helio_lon(get_julian_millennia(t)),
+         mar_get_helio_lon(get_julian_millennia(t)),
+         jup_get_helio_lon(get_julian_millennia(t)),
+         sat_get_helio_lon(get_julian_millennia(t)),
+         ura_get_helio_lon(get_julian_millennia(t)),
+         nep_get_helio_lon(get_julian_millennia(t)),
+         plu_get_helio_lon(get_julian_centuries(t))
+     )
+    array.avg(longs)
+
+
+// ──────────────── RETROGRADE MOTION STATE ────────────────
+
+
+// @function Returns true if the planet is currently in retrograde motion (geocentric speed < 0) == 0 = stationary.
+// @param p The planet to check.
+// @param t Time in Unix timestamp (milliseconds).
+// @returns true if the planet is in retrograde, false otherwise.
+export is_retrograde(Planet p, float t) =>
+    get_speed(p, t) < 0.0
+
+
+// ════════════════════ TEST PLOTS ════════════════════
+
+string planet_input = input.string("Sun", "Planet", options=["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune", "Pluto"])
+bool show_helio = input.bool(false, "Show Heliocentric Longitude")
+
+Planet p = string_to_planet(planet_input)
+
+float geo_lon = get_longitude(p, time, true)
+float helio_lon = show_helio ? get_longitude(p, time, false) : na
+float decl = get_declination(p, time)
+float speed = get_speed(p, time)
+
+plot(geo_lon, "Geocentric Longitude", color=color.yellow)
+plot(helio_lon, "Heliocentric Longitude", color=color.blue)
+plot(decl, "Declination", color=color.red)
+plot(not na(speed) ? speed * 100 : na, "Speed x100", color=color.white)
