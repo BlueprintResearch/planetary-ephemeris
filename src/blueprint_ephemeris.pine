@@ -18,7 +18,7 @@
 //
 // @author       BlueprintResearch (Javonnii)
 // @repository   https://github.com/BlueprintResearch/planetary-ephemeris
-// @license      MIT License - Free to use with attribution
+// @license      MIT License - Free to use; attribution appreciated, never required
 //
 // @accuracy     Validated against JPL DE440 via Skyfield (1850-2100):
 //               Sun: 0.004° · Mercury: 0.009° · Venus: 0.008° · Mars: 0.009°
@@ -37,8 +37,8 @@
 //   © 2025-2026 BlueprintResearch / Javonnii
 //   Licensed under the MIT License (relicensed from CC BY-SA 4.0 on 2026-09-12)
 //   Full text: https://github.com/BlueprintResearch/planetary-ephemeris/blob/main/LICENSE
-//   Commercial use welcome. Keep this copyright notice in copies and
-//   substantial portions. Attribution appreciated: "Blueprint Ephemeris by BlueprintResearch".
+//   Use it however you like, commercial or personal, no strings attached.
+//   Attribution is appreciated but never enforced: "Blueprint Ephemeris by BlueprintResearch".
 //   Indicators published by BlueprintResearch keep their own licenses.
 // ════════════════════════════════════════════════════════════════
 //
