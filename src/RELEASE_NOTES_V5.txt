@@ -1,0 +1,43 @@
+ █ [b]V5 — MOON DISTANCE + ANGULAR SIZE[/b]
+
+2 new functions (47 total). Moon distance via ELP2000-82 sigma_r (46 cosine terms). Angular size for all bodies using IAU 2015 radii.
+
+[b]New:[/b]
+
+[b]get_moon_distance(t)[/b] — Moon's geocentric distance in km (~356,500–406,700 km). Uses ELP2000-82 distance series. Validated: 27.5 km RMS over 250 years (0.007%).
+
+[b]get_angular_size(p, t)[/b] — Apparent angular diameter in arcseconds. Works for all planets, the Sun, Moon, and Pluto. Returns na for Earth.
+  Sun: ~1,891–1,952" | Moon: ~1,764–2,010" | Venus: ~10–66"
+  Jupiter: ~30–50" | Saturn: ~15–21" | Mars: ~3.5–25"
+
+[b]Updated:[/b]
+
+[b]get_distance(Planet.Moon, t)[/b] — Now returns AU instead of na.
+
+[b]Accuracy vs DE440 (250 years):[/b]
+  Moon Distance: 27.5 km RMS (max 50.1 km)
+  Angular Size: Sun 0.28" | Moon 0.13" | Jupiter 0.008" | all others < 0.01"
+
+[b]Bug fix:[/b] eval_sigma_b had 44 terms instead of the correct 43 (extra trailing zero).
+
+[image]REPLACE_WITH_SNAPSHOT_URL_angular_diameter_errors[/image]
+[image]REPLACE_WITH_SNAPSHOT_URL_distance_errors[/image]
+
+
+Added:
+[b]get_moon_distance(time_)[/b]
+  Returns geocentric distance to the Moon.
+  Parameters:
+    [b]time_ (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Distance in kilometers.
+
+[b]get_angular_size(p, t)[/b]
+  Returns apparent angular diameter of a planet as seen from Earth.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) Planet enum value.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Angular diameter in arcseconds, or na for Earth.
+
+[image]REPLACE_WITH_SNAPSHOT_URL_angular_diameter_errors[/image]
+[image]REPLACE_WITH_SNAPSHOT_URL_distance_errors[/image]
+

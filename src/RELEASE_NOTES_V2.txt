@@ -1,0 +1,418 @@
+█ [b]V2 — 25 NEW FUNCTIONS + FULL DE440 VALIDATION[/b]
+
+This update adds 25 new exported functions across 6 categories, bringing the total to 45. Every calculation has been validated against NASA's JPL DE440 ephemeris over 250 years (1850–2100).
+
+[b]New capabilities:[/b]
+
+• [b]Ecliptic Latitude[/b] — geocentric and heliocentric latitude for all planets
+• [b]Right Ascension & Heliocentric Declination[/b] — equatorial coordinates from both Earth and Sun perspectives
+• [b]Distance[/b] — heliocentric radius (AU) and geocentric distance (AU)
+• [b]Elongation[/b] — unsigned (0–180°) and signed (morning/evening star)
+• [b]Aspects & Relationships[/b] — aspect angle, midpoint, synodic phase, speed differential, parallel, contraparallel
+• [b]Visibility & Phase[/b] — phase angle, illuminated fraction
+• [b]Zodiac[/b] — sign index, sign degree, sign name
+• [b]Sidereal Time & Angles[/b] — GMST, LST, Ascendant/Descendant/Midheaven/IC, Whole Sign and Equal House cusps
+• [b]Obliquity[/b] — mean obliquity of the ecliptic
+
+For heliocentric synodic cycles, use Planet.Earth (e.g., Earth–Jupiter instead of Sun–Jupiter).
+
+[b]Accuracy (validated over 250 years vs DE440):[/b]
+
+  Longitude:       0.004°–0.062° RMS (all bodies < 0.1°)
+  Latitude:        0.0001°–0.093° RMS
+  Right Ascension: 0.006°–0.062° RMS
+  Helio Declination: 0.005°–0.028° RMS
+  Distance:        0.00001–0.006 AU RMS
+  Ascendant/MC:    0.021° RMS
+
+[b]Bug fixes:[/b]
+
+• Fixed VSOP87D L1[0] precession coefficients for all 8 planets — was using VSOP87B values (missing +0.24382 rad/millennium of general precession). This single fix reduced longitude error from ~0.75° to < 0.1° across the board.
+• Fixed Jupiter speed L1[0] coefficient (was still using old VSOP87B value).
+• Corrected Moon function parameter documentation.
+
+[b]Validation plots:[/b]
+
+[image]REPLACE_WITH_SNAPSHOT_URL_full_validation_dashboard[/image]
+[image]REPLACE_WITH_SNAPSHOT_URL_before_after_rms[/image]
+
+Full validation data and source code: https://github.com/javonniicurry/Planetary_Ephemeris
+
+
+v2
+
+Added:
+[b]get_latitude(p, t, preferGeo)[/b]
+  Returns how far a planet sits above or below the ecliptic plane (the imaginary flat
+disc traced by Earth's orbit around the Sun). Most planets stay within a few degrees
+of this plane. Positive values mean north of the ecliptic, negative means south.
+In geocentric mode, this is the apparent latitude as seen from Earth. In heliocentric
+mode, it is the true latitude as seen from the Sun.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]preferGeo (bool)[/b]: (bool) If true, return geocentric latitude (as seen from Earth). If false, return heliocentric (as seen from the Sun).
+  Returns: (float) Ecliptic latitude in degrees. Positive = north of ecliptic, negative = south. Range roughly [-10, +10] for most planets. Returns na for Sun/Moon heliocentric.
+
+[b]get_helio_declination(p, t)[/b]
+  Returns a planet's declination as if you were observing from the Sun's center.
+Declination measures how far north or south a body appears relative to the celestial
+equator (an extension of Earth's equator into space). Standard (geocentric) declination
+measures this from Earth's perspective. Heliocentric declination uses the planet's true
+position relative to the Sun, revealing the planet's own orbital cycle without Earth's
+influence. For example, Mercury's heliocentric declination cycles every 88 days (its real
+orbit), whereas its geocentric declination cycles roughly once per year (dominated by Earth's
+motion). George Bayer used heliocentric declination as a core trading indicator.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Heliocentric equatorial declination in degrees, range [-90, +90]. Positive = north, negative = south. Returns na for Sun and Moon.
+
+[b]get_right_ascension(p, t)[/b]
+  Returns a planet's right ascension — its position along the celestial equator,
+measured in degrees from the vernal equinox (the point where the Sun crosses the
+celestial equator heading north in March). Think of it as the "longitude" equivalent
+in the equatorial coordinate system. While ecliptic longitude measures position along
+the zodiac, right ascension measures position along the celestial equator. Together
+with declination, it fully specifies where a planet appears in the sky. George Bayer
+used right ascension alongside ecliptic longitude for complete positional analysis.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Geocentric right ascension in degrees, range [0, 360).
+
+[b]get_radius(p, t)[/b]
+  Returns how far a planet is from the Sun, measured in astronomical units (AU).
+One AU is the average Earth-Sun distance (~150 million km / ~93 million miles).
+For example, Mercury ranges from 0.31 to 0.47 AU, while Neptune is about 30 AU.
+This distance changes over time because planetary orbits are elliptical, not circular.
+When a planet is closest to the Sun (perihelion), it moves fastest in its orbit.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Heliocentric distance in astronomical units (AU). Returns na for Sun (distance from itself) and Moon (orbits Earth, not Sun).
+
+[b]get_distance(p, t)[/b]
+  Returns how far a planet is from Earth right now, measured in astronomical units (AU).
+This distance changes dramatically as planets orbit — for example, Mars ranges from
+about 0.37 AU (closest approach) to 2.68 AU (opposite side of the Sun). When a planet
+is closer to Earth, it appears brighter and moves faster across the sky. This distance
+is what determines a planet's apparent brightness and angular size as seen from Earth.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Geocentric distance in astronomical units (AU). Returns 0.0 for Earth.
+
+[b]get_mean_obliquity(t)[/b]
+  Returns the mean obliquity of the ecliptic — the tilt of Earth's rotational axis
+relative to its orbital plane around the Sun. This tilt (currently about 23.44°) is
+what causes the seasons. It changes very slowly over tens of thousands of years.
+The obliquity is used internally to convert between ecliptic coordinates (along the
+zodiac) and equatorial coordinates (along the celestial equator). You typically don't
+need this directly, but it's exposed for advanced calculations.
+  Parameters:
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Mean obliquity of the ecliptic in degrees (currently ~23.44°).
+
+[b]get_elongation(p, t)[/b]
+  Returns how far a planet appears from the Sun in our sky, measured in degrees (0-180).
+At 0° the planet is hidden behind (or in front of) the Sun. At maximum elongation,
+the planet is easiest to see at dawn or dusk. Mercury maxes out around 28°, Venus
+around 47°. Outer planets (Mars-Pluto) can reach up to 180° (opposition — directly
+opposite the Sun in the sky). In financial astrology, maximum elongation dates for
+Mercury and Venus are considered significant turning points.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to check.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Angular separation from the Sun in degrees, range [0, 180]. Returns na for Sun itself.
+
+[b]get_signed_elongation(p, t)[/b]
+  Returns the signed elongation of a planet from the Sun. Positive values mean western
+elongation — the planet rises before the Sun and is visible in the morning sky (morning
+star). Negative values mean eastern elongation — the planet sets after the Sun and is
+visible in the evening sky (evening star). The magnitude is identical to get_elongation();
+the sign tells you which side of the Sun the planet is on. For Mercury and Venus, maximum
+western elongation (~28° and ~47°) marks peak morning visibility, while maximum eastern
+elongation marks peak evening visibility.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to check.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Signed elongation in degrees. Positive = west (morning star), negative = east (evening star). Range [-180, 180]. Returns na for Sun itself.
+
+[b]get_aspect_angle(p1, p2, t, preferGeo)[/b]
+  Returns the angular distance between any two planets, measured as the shortest arc
+(0-180°). This is the foundation of aspect analysis — the core of astrological
+interpretation. When two planets are 0° apart, they are in conjunction (merged energy).
+At 60° they form a sextile (cooperative). At 90° a square (tension). At 120° a trine
+(harmony). At 180° an opposition (polarity). You can check whether this angle is within
+an "orb" (tolerance) of any target aspect to detect active aspects.
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet.
+    [b]p2 (series Planet)[/b]: (Planet) Second planet.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]preferGeo (bool)[/b]: (bool) If true, use geocentric longitudes. If false, use heliocentric.
+  Returns: (float) Shortest angular distance between the two planets in degrees, range [0, 180].
+
+[b]get_midpoint(p1, p2, t, preferGeo)[/b]
+  Returns the midpoint between any two planets — the exact degree halfway between them
+along the shortest arc of the zodiac circle. Midpoints reveal hidden connections between
+planetary pairs and are central to Cosmobiology (Ebertin method) and Uranian astrology.
+When a third planet or sensitive point lands on a midpoint, it activates that planetary
+pair's combined energy. Handles the wraparound correctly (e.g., midpoint of 350° and 10°
+is 0°, not 180°).
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet.
+    [b]p2 (series Planet)[/b]: (Planet) Second planet.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]preferGeo (bool)[/b]: (bool) If true, use geocentric longitudes. If false, use heliocentric.
+  Returns: (float) Midpoint longitude in degrees, range [0, 360).
+
+[b]get_sign(longitude)[/b]
+  Returns which zodiac sign a longitude falls in, as a number 0-11.
+The zodiac divides the ecliptic into twelve 30° segments starting at 0° Aries.
+0 = Aries (0-30°), 1 = Taurus (30-60°), 2 = Gemini (60-90°), 3 = Cancer (90-120°),
+4 = Leo (120-150°), 5 = Virgo (150-180°), 6 = Libra (180-210°), 7 = Scorpio (210-240°),
+8 = Sagittarius (240-270°), 9 = Capricorn (270-300°), 10 = Aquarius (300-330°),
+11 = Pisces (330-360°). Use this with consecutive bars to detect sign ingresses
+(when a planet changes signs — considered significant in financial astrology).
+  Parameters:
+    [b]longitude (float)[/b]: (float) Any ecliptic longitude in degrees.
+  Returns: (int) Sign index 0-11 where 0=Aries and 11=Pisces.
+
+[b]get_sign_degree(longitude)[/b]
+  Returns how many degrees into its current sign a longitude is (0-30°).
+For example, 45° ecliptic longitude is 15° Taurus (45 - 30 = 15).
+This tells you the planet's exact position within a sign. Early degrees
+(0-5°) are considered "entering" the sign's energy, while late degrees
+(25-30°) are considered "leaving" — about to ingress into the next sign.
+  Parameters:
+    [b]longitude (float)[/b]: (float) Any ecliptic longitude in degrees.
+  Returns: (float) Degrees within the current sign, range [0, 30).
+
+[b]get_sign_name(longitude)[/b]
+  Returns the name of the zodiac sign for a given longitude.
+Converts a raw ecliptic longitude (0-360°) into the familiar sign name.
+  Parameters:
+    [b]longitude (float)[/b]: (float) Any ecliptic longitude in degrees.
+  Returns: (string) Sign name: "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+"Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", or "Pisces".
+
+[b]get_phase_angle(p, t)[/b]
+  Returns the phase angle of a planet — the angle Sun-Planet-Earth. This determines
+how much of the planet's surface appears illuminated from our perspective. At 0° the
+planet is fully lit (opposition — behind Earth relative to the Sun). At 180° the planet
+is between us and the Sun (conjunction — dark side facing us). For Mercury and Venus,
+this creates dramatic phase changes like the Moon's phases. For outer planets, the phase
+angle is always small (they appear nearly "full").
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to check.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Phase angle in degrees, range [0, 180]. 0° = fully illuminated, 180° = dark. Returns na for Sun and Moon.
+
+[b]get_illuminated_fraction(p, t)[/b]
+  Returns the illuminated fraction of a planet's disk as seen from Earth (0.0 to 1.0).
+This is derived from the phase angle. A value of 1.0 means the planet appears fully
+illuminated (like a full Moon), while 0.0 means the dark side is facing us.
+Mercury and Venus show dramatic variation (0.0 at inferior conjunction to 1.0 at
+superior conjunction). Outer planets are always near 1.0.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) The planet to check.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Illuminated fraction, range [0.0, 1.0]. Returns na for Sun and Moon.
+
+[b]get_synodic_phase(p1, p2, t, preferGeo)[/b]
+  Returns the synodic phase between two planets — their angular separation measured
+in the direction of zodiacal motion (0-360°). This tracks where we are in the cycle
+between consecutive conjunctions of two planets. 0° = conjunction (start of cycle),
+90° = first quarter, 180° = opposition (midpoint of cycle), 270° = last quarter.
+The Jupiter-Saturn synodic cycle (~20 years) is the backbone of long-term business
+cycle analysis in financial astrology. The Sun-Moon synodic cycle is the familiar
+lunar month (New Moon at 0°, Full Moon at 180°).
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet (the faster one by convention, but either order works).
+    [b]p2 (series Planet)[/b]: (Planet) Second planet (the slower one by convention).
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]preferGeo (bool)[/b]: (bool) If true, use geocentric longitudes. If false, use heliocentric.
+  Returns: (float) Synodic phase angle in degrees, range [0, 360). 0° = conjunction, 180° = opposition.
+
+[b]is_parallel(p1, p2, t, orb)[/b]
+  Returns true when two planets are at the same declination (both the same distance
+north or south of the celestial equator), within a given tolerance (orb). This is
+called a "parallel" aspect and acts like a conjunction — the planets' energies merge.
+Parallels operate independently of zodiac position, revealing hidden correlations
+that longitude aspects miss entirely. Both W.D. Gann and George Bayer used parallels
+as core trading indicators. The typical orb is 1°.
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet.
+    [b]p2 (series Planet)[/b]: (Planet) Second planet.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]orb (float)[/b]: (float) Tolerance in degrees (typically 1.0).
+  Returns: (bool) True if both planets share the same declination within the given orb.
+
+[b]is_contraparallel(p1, p2, t, orb)[/b]
+  Returns true when two planets are at equal declination but on opposite sides of the
+celestial equator (one north, one south), within a given tolerance (orb). This is
+called a "contraparallel" and acts like an opposition — creating tension or polarity.
+Like parallels, contraparallels are invisible in standard zodiacal charts and only
+show up when you track declination. The typical orb is 1°.
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet.
+    [b]p2 (series Planet)[/b]: (Planet) Second planet.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]orb (float)[/b]: (float) Tolerance in degrees (typically 1.0).
+  Returns: (bool) True if both planets are at equal declination on opposite sides of the equator.
+
+[b]get_speed_diff(p1, p2, t)[/b]
+  Returns the difference in geocentric speed between two planets (degrees/day).
+George Bayer discovered that specific speed differentials predict market reversals.
+His key rule: when the Mars-Mercury speed difference equals exactly 59 arcminutes
+(about 0.983°/day), a major top or bottom forms within 3 days. He also tracked
+individual planet speeds — Mercury at exactly 59 arcminutes or 1°58' per day
+signals trend reversals.
+  Parameters:
+    [b]p1 (series Planet)[/b]: (Planet) First planet.
+    [b]p2 (series Planet)[/b]: (Planet) Second planet.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Speed difference in degrees/day: get_speed(p1) - get_speed(p2). Positive means p1 is moving faster.
+
+[b]get_gmst(t)[/b]
+  Returns Greenwich Mean Sidereal Time (GMST) — a measure of Earth's rotational
+position relative to the stars. As Earth spins, different parts of the sky pass
+overhead. GMST tells you which part of the celestial sphere is directly above
+the Greenwich meridian (0° longitude) right now. This is the foundation for
+calculating the Ascendant and Midheaven. One full sidereal day (360°) is about
+23 hours 56 minutes — slightly shorter than a solar day because Earth also orbits
+the Sun.
+  Parameters:
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Greenwich Mean Sidereal Time in degrees, range [0, 360).
+
+[b]get_lst(t, observer_lon)[/b]
+  Returns Local Sidereal Time (LST) — the sidereal time at your specific location
+on Earth. This is simply GMST adjusted for your longitude. If you're east of
+Greenwich, your local sidereal time is ahead; if west, it's behind. LST determines
+which degree of the ecliptic is culminating (at the Midheaven) at your location.
+  Parameters:
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]observer_lon (float)[/b]: (float) Observer's geographic longitude in degrees. East is positive, west is negative (e.g., New York = -74.0, London = 0.0, Tokyo = 139.7).
+  Returns: (float) Local Sidereal Time in degrees, range [0, 360).
+
+[b]get_angles(t, observer_lat, observer_lon)[/b]
+  Returns the four angular house cusps: Ascendant (ASC), Descendant (DSC), Midheaven (MC),
+and Imum Coeli (IC) — the four most powerful points in any astrological chart.
+
+The Midheaven (MC) is the degree of the ecliptic that is highest in the sky at your
+location right now — the point of culmination. It represents public life, career, and
+visible achievements.
+
+The Imum Coeli (IC) is directly opposite the MC (MC + 180°) — the lowest point below
+the horizon. It represents roots, home, and private life.
+
+The Ascendant (ASC) is the degree of the ecliptic rising on the eastern horizon at your
+location right now. It changes by about 1° every 4 minutes, making it the most time-sensitive
+point in a chart. It represents the self, first impressions, and beginnings.
+
+The Descendant (DSC) is directly opposite the ASC (ASC + 180°) — the point setting on the
+western horizon. It represents partnerships and "the other."
+
+These four angles rotate through all 360° of the zodiac every ~24 hours as Earth spins.
+They require your geographic latitude and longitude as inputs.
+  Parameters:
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]observer_lat (float)[/b]: (float) Observer's geographic latitude in degrees. North is positive, south is negative (e.g., New York = 40.7, Sydney = -33.9).
+    [b]observer_lon (float)[/b]: (float) Observer's geographic longitude in degrees. East is positive, west is negative (e.g., New York = -74.0, London = 0.0, Tokyo = 139.7).
+  Returns: [ASC, DSC, MC, IC] Four ecliptic longitudes in degrees, each in range [0, 360).
+
+[b]get_house_cusp_whole_sign(asc_lon, house_num)[/b]
+  Returns the cusp (starting degree) of a house using the Whole Sign system.
+This is the oldest house system, used in Hellenistic astrology. The entire sign
+containing the Ascendant becomes the 1st house, the next sign becomes the 2nd house,
+and so on. Each house spans exactly 30° (one full sign). Simple, unambiguous, and
+increasingly popular in modern practice.
+  Parameters:
+    [b]asc_lon (float)[/b]: (float) Ascendant longitude in degrees (from get_angles).
+    [b]house_num (int)[/b]: (int) House number, 1-12.
+  Returns: (float) Ecliptic longitude of the house cusp in degrees, range [0, 360).
+
+[b]get_house_cusp_equal(asc_lon, house_num)[/b]
+  Returns the cusp (starting degree) of a house using the Equal House system.
+Each house spans exactly 30° starting from the exact Ascendant degree (not the sign
+boundary). For example, if the ASC is at 15° Taurus, the 1st house is 15° Taurus to
+15° Gemini, the 2nd house is 15° Gemini to 15° Cancer, etc. This system is simple
+and gives each house equal weight, but the MC may not align with the 10th house cusp.
+  Parameters:
+    [b]asc_lon (float)[/b]: (float) Ascendant longitude in degrees (from get_angles).
+    [b]house_num (int)[/b]: (int) House number, 1-12.
+  Returns: (float) Ecliptic longitude of the house cusp in degrees, range [0, 360).
+
+Updated:
+[b]get_geo_ecl_lon(time_)[/b]
+  Returns geocentric ecliptic longitude of the Moon.
+  Parameters:
+    [b]time_ (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Longitude in degrees, range [0, 360).
+
+[b]get_geo_ecl_lat(time_)[/b]
+  Returns geocentric ecliptic latitude of the Moon.
+  Parameters:
+    [b]time_ (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Latitude in degrees.
+
+[b]get_obliquity_j(time_)[/b]
+  Returns mean obliquity of the ecliptic.
+  Parameters:
+    [b]time_ (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Obliquity in degrees.
+
+[b]get_declination(p, t)[/b]
+  Returns planetary geocentric equatorial declination.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) Planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Geocentric declination in degrees, range [-90, +90] where positive is north.
+Note: This function returns geocentric declination. For heliocentric, use get_helio_declination().
+
+[b]get_mean_north_node_lon(time_)[/b]
+  Returns mean longitude of the Moon's North Node (ascending node).
+  Parameters:
+    [b]time_ (float)[/b]
+  Returns: (float) Longitude in degrees, range [0, 360).
+Note: Mean node is a simple averaged calculation, reducing computational error. Used for declination calculations.
+
+[b]get_true_north_node_lon(time_)[/b]
+  Returns true longitude of the Moon's North Node with perturbation corrections.
+  Parameters:
+    [b]time_ (float)[/b]
+  Returns: (float) Longitude in degrees, range [0, 360).
+Note: True node includes periodic perturbations but formula is low precision. Consider using mean node for consistency.
+
+[b]get_north_node_declination(time_)[/b]
+  Returns declination of the Moon's North Node.
+  Parameters:
+    [b]time_ (float)[/b]
+  Returns: (float) Declination in degrees, range [-23.4, +23.4] (bounded by obliquity).
+Note: Uses mean node for calculation (more consistent than true node).
+
+[b]string_to_planet(planetStr)[/b]
+  Converts a planet string identifier to Planet enum value.
+  Parameters:
+    [b]planetStr (string)[/b]: (string) Planet name (case-insensitive). Supports formats: "Sun", "☉︎ Sun", "sun", "SUN"
+  Returns: (Planet) Corresponding Planet enum. Returns Planet.Sun if string not recognized.
+Note: Supported planet strings: Sun, Moon, Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto
+
+[b]get_longitude(p, t, preferGeo)[/b]
+  Returns planetary longitude with automatic coordinate system selection.
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) Planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+    [b]preferGeo (bool)[/b]: (bool) If true, return geocentric; if false, return heliocentric.
+  Returns: (float) Longitude in degrees, normalized to range [0, 360).
+Note: Sun and Moon always return geocentric regardless of preference (heliocentric not applicable).
+
+[b]get_speed(p, t)[/b]
+  Returns planetary geocentric longitude speed (rate of change).
+  Parameters:
+    [b]p (series Planet)[/b]: (Planet) Planet to query.
+    [b]t (float)[/b]: (float) Unix timestamp in milliseconds (use built-in 'time' variable).
+  Returns: (float) Geocentric longitude speed in degrees per day. Negative values indicate retrograde motion. Returns na for Moon.
+Note: Speed is always geocentric (no heliocentric equivalent in library). Moon speed calculation not implemented.

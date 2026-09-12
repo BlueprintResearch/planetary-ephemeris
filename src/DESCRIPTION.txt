@@ -1,4 +1,4 @@
-Consolidated planetary ephemeris library with improved accuracy. Supersedes previous individual planet libraries (lib_vsop_core, lib_vsop_mercury, lib_vsop_venus, etc.). One import gives you geocentric/heliocentric positions for all 10 solar system bodies.
+Consolidated planetary ephemeris library with 45 exported functions. One import gives you geocentric/heliocentric longitude, latitude, declination, right ascension, speed, distance, aspects, midpoints, zodiac signs, phase angles, synodic cycles, parallels, sidereal time, Ascendant/Midheaven, house cusps, and lunar node positions for all 10 solar system bodies, plus Earth for heliocentric charts.
 
 
 █ [b]ACCURACY — VALIDATED AGAINST JPL DE440[/b]
@@ -18,6 +18,14 @@ Every body was validated against NASA's DE440 ephemeris (via Skyfield) across [b
 
 All bodies under 0.1° RMS — more than sufficient for aspect calculations, ingress timing, and planetary line work. The Sun is accurate to 14 arcseconds using a truncated series that fits entirely inside Pine Script's token limits.
 
+[b]New calculation accuracy (validated over 250 years):[/b]
+  Latitude:      0.0001°–0.093° RMS (all planets < 0.1°)
+  Right Ascension: 0.006°–0.062° RMS (all planets < 0.1°)
+  Helio Declination: 0.005°–0.028° RMS
+  Distance:      0.00001–0.006 AU RMS (inner planets excellent)
+  GMST:          0.112° RMS
+  Ascendant/MC:  0.021° RMS
+
 
 █ [b]WHAT'S NEW (V2)[/b]
 
@@ -30,6 +38,8 @@ The original ephemeris required 11 chained library imports. A full validation au
 • [b]Single Import[/b] — No dependency chain. Faster execution.
 
 • [b]Moon Improvements[/b] — Functions accept raw `time` directly. Node functions renamed with explicit north/south designation.
+
+• [b]24 New Functions[/b] — Latitude, heliocentric declination, right ascension, distance, obliquity, elongation, aspect angle, midpoint, zodiac signs, phase angle, illumination, synodic phase, parallel/contraparallel, speed differential, sidereal time, Ascendant/Descendant/Midheaven/IC, and house cusps. All validated against DE440 over 250 years.
 
 
 █ [b]THEORIES[/b]
@@ -68,6 +78,74 @@ bool mercury_retro = eph.is_retrograde(eph.Planet.Mercury, time)
 bgcolor(mercury_retro ? color.new(color.red, 90) : na)
 [/pine]
 
+[b]Latitude, Right Ascension & Heliocentric Declination:[/b]
+[pine]
+float mars_lat = eph.get_latitude(eph.Planet.Mars, time, true)
+float mars_ra = eph.get_right_ascension(eph.Planet.Mars, time)
+float mars_hdecl = eph.get_helio_declination(eph.Planet.Mars, time)
+
+plot(mars_lat, "Mars Geo Latitude", color.orange)
+plot(mars_ra, "Mars RA", color.yellow)
+plot(mars_hdecl, "Mars Helio Declination", color.red)
+[/pine]
+
+[b]Aspect detection with orb checking:[/b]
+[pine]
+float angle = eph.get_aspect_angle(eph.Planet.Jupiter, eph.Planet.Saturn, time, true)
+
+float orb = 8.0
+bool is_conjunction = angle < orb
+bool is_square = math.abs(angle - 90) < orb
+bool is_trine = math.abs(angle - 120) < orb
+bool is_opposition = math.abs(angle - 180) < orb
+
+bgcolor(is_conjunction ? color.new(color.yellow, 85) : is_opposition ? color.new(color.red, 85) : is_trine ? color.new(color.green, 85) : is_square ? color.new(color.orange, 85) : na)
+plot(angle, "Jupiter-Saturn Aspect", color.white)
+[/pine]
+
+[b]Heliocentric synodic cycle (Earth-Jupiter):[/b]
+[pine]
+float helio_phase = eph.get_synodic_phase(eph.Planet.Earth, eph.Planet.Jupiter, time, false)
+
+plot(helio_phase, "Earth-Jupiter Synodic Phase", color.yellow)
+hline(0, "Conjunction (0°)", color.gray)
+hline(180, "Opposition (180°)", color.gray)
+[/pine]
+
+[b]Elongation — angular distance from the Sun:[/b]
+[pine]
+float venus_elong = eph.get_elongation(eph.Planet.Venus, time)
+float mercury_elong = eph.get_elongation(eph.Planet.Mercury, time)
+
+plot(venus_elong, "Venus Elongation", color.yellow)
+plot(mercury_elong, "Mercury Elongation", color.orange)
+// Venus maxes out around 47 deg, Mercury around 28 deg
+[/pine]
+
+[b]Signed elongation — morning star vs evening star:[/b]
+[pine]
+float venus_elong = eph.get_signed_elongation(eph.Planet.Venus, time)
+bool is_morning = venus_elong > 0
+color elong_color = is_morning ? color.yellow : color.blue
+
+plot(venus_elong, "Venus Signed Elongation", elong_color)
+hline(0, "Sun", color.gray)
+// Above zero = morning star (west), below zero = evening star (east)
+[/pine]
+
+[b]Ascendant & Midheaven (requires your location):[/b]
+[pine]
+float lat = input.float(40.7, "Latitude")
+float lon = input.float(-74.0, "Longitude")
+
+[ASC, DSC, MC, IC] = eph.get_angles(time, lat, lon)
+
+plot(ASC, "Ascendant", color.green)
+plot(MC, "Midheaven", color.yellow)
+plot(DSC, "Descendant", color.red)
+plot(IC, "IC", color.purple)
+[/pine]
+
 [b]Moon nodes and declination:[/b]
 [pine]
 float north_node = eph.get_mean_north_node_lon(time)
@@ -98,22 +176,74 @@ All functions accept TradingView's `time` variable directly.
 
 █ [b]FUNCTIONS[/b]
 
-[b]Unified API[/b] (all planets):
-  `get_longitude(Planet, time, preferGeo)` — geo or heliocentric longitude
-  `get_declination(Planet, time)` — equatorial declination
-  `get_speed(Planet, time)` — longitude speed (°/day)
+[b]Core API[/b] (all planets):
+  `get_longitude(Planet, time, preferGeo)` — geo or heliocentric longitude (deg)
+  `get_latitude(Planet, time, preferGeo)` — geo or heliocentric ecliptic latitude (deg)
+  `get_declination(Planet, time)` — equatorial declination (deg)
+  `get_helio_declination(Planet, time)` — declination as seen from the Sun (deg)
+  `get_right_ascension(Planet, time)` — equatorial right ascension (deg)
+  `get_speed(Planet, time)` — longitude speed (deg/day)
+  `get_radius(Planet, time)` — heliocentric distance from Sun (AU)
+  `get_distance(Planet, time)` — geocentric distance from Earth (AU)
   `is_retrograde(Planet, time)` — true when retrograde
-  `string_to_planet(string)` — name to enum
+  `string_to_planet(string)` — name to Planet enum
+  `normalizeLongitude(float)` — normalize to [0, 360)
+
+[b]Aspects & Relationships[/b] (two planets):
+  `get_aspect_angle(Planet, Planet, time, preferGeo)` — shortest arc 0–180 deg
+  `get_midpoint(Planet, Planet, time, preferGeo)` — zodiacal midpoint (handles wraparound)
+  `get_synodic_phase(Planet, Planet, time, preferGeo)` — phase within synodic cycle 0–360 deg
+      For heliocentric synodic cycles, use Planet.Earth (e.g., Earth–Jupiter instead of Sun–Jupiter).
+  `get_speed_diff(Planet, Planet, time)` — speed difference (deg/day)
+  `is_parallel(Planet, Planet, time, orb)` — same declination within orb
+  `is_contraparallel(Planet, Planet, time, orb)` — opposite declination within orb
+
+[b]Visibility & Phase[/b]:
+  `get_elongation(Planet, time)` — angular separation from Sun 0–180 deg
+  `get_signed_elongation(Planet, time)` — signed elongation: positive = west/morning star, negative = east/evening star
+  `get_phase_angle(Planet, time)` — Sun-Planet-Earth angle (illumination geometry)
+  `get_illuminated_fraction(Planet, time)` — fraction of disk lit 0.0–1.0
+
+[b]Zodiac[/b]:
+  `get_sign(longitude)` — sign index 0–11 (Aries=0, Pisces=11)
+  `get_sign_degree(longitude)` — degrees within current sign 0–30
+  `get_sign_name(longitude)` — sign name string ("Aries" through "Pisces")
+
+[b]Obliquity[/b]:
+  `get_mean_obliquity(time)` — mean obliquity of the ecliptic (deg)
+
+[b]Sidereal Time & Angles[/b] (location-based):
+  `get_gmst(time)` — Greenwich Mean Sidereal Time (deg)
+  `get_lst(time, observer_lon)` — Local Sidereal Time (deg)
+  `get_angles(time, lat, lon)` — returns [ASC, DSC, MC, IC] (four angular cusps, deg)
+  `get_house_cusp_whole_sign(asc_lon, house_num)` — Whole Sign house cusp (deg)
+  `get_house_cusp_equal(asc_lon, house_num)` — Equal House cusp (deg)
 
 [b]Averages[/b]:
-  `get_avg6_geo_lon` / `get_avg6_helio_lon` — Mercury–Saturn
-  `get_avg8_geo_lon` / `get_avg8_helio_lon` — Mercury–Neptune
+  `get_avg6_geo_lon` / `get_avg6_helio_lon` — Mercury–Saturn average
+  `get_avg8_geo_lon` / `get_avg8_helio_lon` — Mercury–Neptune average
 
 [b]Moon[/b] (direct access):
-  `get_geo_ecl_lon(time)` · `get_geo_ecl_lat(time)` · `get_declination(time)`
+  `get_geo_ecl_lon(time)` · `get_geo_ecl_lat(time)` · `get_obliquity_j(time)`
+  `get_declination(time)` (Moon overload)
   `get_mean_north_node_lon(time)` · `get_mean_south_node_lon(time)`
   `get_true_north_node_lon(time)` · `get_true_south_node_lon(time)`
   `get_north_node_declination(time)` · `get_south_node_declination(time)`
+
+
+█ [b]VALIDATION PLOTS[/b]
+
+Every calculation has been validated against JPL DE440 across 250 years (1850–2100). Full validation plots and error profiles are available:
+
+[b]Add your TradingView chart snapshots here:[/b]
+Upload the validation plots to a TradingView chart, take snapshots, and replace the URLs below:
+
+[image]REPLACE_WITH_SNAPSHOT_URL_full_validation_dashboard[/image]
+[image]REPLACE_WITH_SNAPSHOT_URL_before_after_rms[/image]
+[image]REPLACE_WITH_SNAPSHOT_URL_improvement_factor[/image]
+
+[b]GitHub repository with all validation data and plots:[/b]
+[url=https://github.com/javonniicurry/Planetary_Ephemeris]Source code and validation on GitHub[/url]
 
 
 █ [b]LIMITATIONS[/b]
@@ -122,6 +252,8 @@ All functions accept TradingView's `time` variable directly.
 • Validated against DE440 across 250 years (1850–2100). Over this full span, the worst-case VSOP87 planet (Uranus) is 0.017° RMS / 0.043° max error. Ingress dates manually verified back to the late 1800s with consistent accuracy.
 • Pluto uses Meeus series, limited to ±1 century from J2000.
 • Moon has no speed function.
+• Location-dependent functions (ASC, MC, houses, LST) require geographic latitude and longitude as inputs. These change with Earth's rotation (~1° per 4 minutes), so they are most meaningful on intraday charts.
+• Mercury heliocentric latitude has higher error (~0.23° RMS) due to its large orbital inclination and limited truncated B-series terms. Geocentric latitude is fine (0.09°).
 
 
 █ [b]ACKNOWLEDGMENTS[/b]
@@ -138,4 +270,3 @@ Coefficient validation made possible by [b]Greg Miller's[/b] VSOP87 multi-langua
 █ [b]OPEN SOURCE[/b]
 
 MIT License — part of the Blueprint Research open-source toolkit.
-[url=https://github.com/javonniicurry/Planetary_Ephemeris]Source code on GitHub[/url]
